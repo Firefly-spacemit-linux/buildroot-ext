@@ -11,7 +11,7 @@ DEVICE_DIR=$(dirname $0)
 SRC_ROOTFS_FILE="$DEVICE_DIR/rootfs.ext4"
 PARTITIONS_FILE="$DEVICE_DIR/partition_universal.json"
 UENV_TXT_FILE="$DEVICE_DIR/env_k3.txt"
-UBOOT_LOGO_FILE="$DEVICE_DIR/bianbu.bmp"
+UBOOT_LOGO_FILE="$DEVICE_DIR/firefly.bmp"
 
 
 solution_name=$(echo "$IMGS_DIR" | awk -F'/' '{print $(NF-1)}')
