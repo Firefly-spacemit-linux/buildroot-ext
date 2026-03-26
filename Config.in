@@ -21,5 +21,6 @@ source "$BR2_EXTERNAL_Bianbu_PATH/package/jetson-utils/Config.in"
 source "$BR2_EXTERNAL_Bianbu_PATH/package/lvgl/Config.in"
 source "$BR2_EXTERNAL_Bianbu_PATH/package/jdk/Config.in"
 source "$BR2_EXTERNAL_Bianbu_PATH/package/esos/Config.in"
+source "$BR2_EXTERNAL_Bianbu_PATH/package/recovery/Config.in"
 
 endmenu
