@@ -1,7 +1,0 @@
-// Common parameter
-console=ttyS0,115200
-init=/init
-bootdelay=0
-knl_name=Image
-kernel_addr_r=0x200000
-

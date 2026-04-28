@@ -1,2 +1,0 @@
-KERNEL=="sd*", SUBSYSTEM=="block", ACTION=="add", RUN+="/bin/mkdir -p /mnt/udisk/%k", RUN+="/bin/mount /dev/%k /mnt/udisk/%k"
-KERNEL=="sd*", SUBSYSTEM=="block", ACTION=="remove", RUN+="/bin/umount /mnt/udisk/%k", RUN+="/bin/rmdir /mnt/udisk/%k"

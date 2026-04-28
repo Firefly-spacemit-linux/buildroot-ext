@@ -52,7 +52,8 @@
       "type": "FAT32",
       "offset": "12M",
       "size": "-",
-      "image": ["factory/bootinfo_block.bin",
+      "image": ["env.bin",
+		"factory/bootinfo_block.bin",
                 "factory/bootinfo_spinand.bin",
                 "factory/bootinfo_spinor.bin",
                 "factory/FSBL.bin",
@@ -61,6 +62,7 @@
                 "esos.itb",
                 "bootloader.img",
                 "bootfs.img",
+		"rootfs.ext4",
                 "/partition_.+.json$/"]
     }
   ]

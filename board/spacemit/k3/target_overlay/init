@@ -16,6 +16,11 @@ for x in $(cat /proc/cmdline); do
 		init=*)
 			init=${x#init=}
 			;;
+		root=PARTUUID=*)
+			sleep 1
+			part_val=${x#root=PARTUUID=}
+			ROOT=$(blkid | grep -i "$part_val" | awk -F ':' '{print $1}')
+			;;
 		root=UUID=*)
 			sleep 1
 			ROOT=${x#root=UUID=}

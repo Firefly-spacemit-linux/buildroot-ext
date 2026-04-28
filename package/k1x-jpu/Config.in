@@ -1,4 +1,0 @@
-config BR2_PACKAGE_K1X_JPU
-	bool "k1x-jpu"
-	help
-	  Spacemit k1x jpu library and  test.

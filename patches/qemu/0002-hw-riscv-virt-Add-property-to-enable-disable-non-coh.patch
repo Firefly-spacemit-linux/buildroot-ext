@@ -1,0 +1,76 @@
+From 892c9f3e0890f929d6a66a4ce2b05f8955650349 Mon Sep 17 00:00:00 2001
+From: linjunyan <junyan.lin@spacemit.com>
+Date: Wed, 25 Feb 2026 10:57:19 +0800
+Subject: [PATCH] hw/riscv/virt: Add property to enable/disable non-coherent
+ PCIe DMA
+
+---
+ hw/riscv/virt.c         | 25 ++++++++++++++++++++++++-
+ include/hw/riscv/virt.h |  1 +
+ 2 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/hw/riscv/virt.c b/hw/riscv/virt.c
+index 07e66b3936..e118adbebf 100644
+--- a/hw/riscv/virt.c
++++ b/hw/riscv/virt.c
+@@ -890,7 +890,9 @@ static void create_fdt_pcie(RISCVVirtState *s,
+     qemu_fdt_setprop_cell(ms->fdt, name, "linux,pci-domain", 0);
+     qemu_fdt_setprop_cells(ms->fdt, name, "bus-range", 0,
+         s->memmap[VIRT_PCIE_ECAM].size / PCIE_MMCFG_SIZE_MIN - 1);
+-    qemu_fdt_setprop(ms->fdt, name, "dma-coherent", NULL, 0);
++    qemu_fdt_setprop(ms->fdt, name,
++                     s->pcie_dma_noncoherent ? "dma-noncoherent" : "dma-coherent",
++                     NULL, 0);
+     if (s->aia_type == VIRT_AIA_TYPE_APLIC_IMSIC) {
+         qemu_fdt_setprop_cell(ms->fdt, name, "msi-parent", msi_pcie_phandle);
+     }
+@@ -1851,6 +1853,20 @@ static void virt_set_iommu_sys(Object *obj, Visitor *v, const char *name,
+     visit_type_OnOffAuto(v, name, &s->iommu_sys, errp);
+ }
+ 
++static bool virt_get_pcie_dma_noncoherent(Object *obj, Error **errp)
++{
++    RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
++
++    return s->pcie_dma_noncoherent;
++}
++
++static void virt_set_pcie_dma_noncoherent(Object *obj, bool value, Error **errp)
++{
++    RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
++
++    s->pcie_dma_noncoherent = value;
++}
++
+ bool virt_is_acpi_enabled(RISCVVirtState *s)
+ {
+     return s->acpi != ON_OFF_AUTO_OFF;
+@@ -1979,6 +1995,13 @@ static void virt_machine_class_init(ObjectClass *oc, const void *data)
+                               NULL, NULL);
+     object_class_property_set_description(oc, "iommu-sys",
+                                           "Enable IOMMU platform device");
++
++    object_class_property_add_bool(oc, "pcie-dma-noncoherent",
++                                   virt_get_pcie_dma_noncoherent,
++                                   virt_set_pcie_dma_noncoherent);
++    object_class_property_set_description(oc, "pcie-dma-noncoherent",
++                                          "Set on/off to enable/disable "
++                                          "non-coherent PCIe DMA");
+ }
+ 
+ static const TypeInfo virt_machine_typeinfo = {
+diff --git a/include/hw/riscv/virt.h b/include/hw/riscv/virt.h
+index 18a2a323a3..f0854f82d1 100644
+--- a/include/hw/riscv/virt.h
++++ b/include/hw/riscv/virt.h
+@@ -64,6 +64,7 @@ struct RISCVVirtState {
+     struct GPEXHost *gpex_host;
+     OnOffAuto iommu_sys;
+     uint16_t pci_iommu_bdf;
++    bool pcie_dma_noncoherent;
+ };
+ 
+ enum {
+-- 
+2.34.1
+

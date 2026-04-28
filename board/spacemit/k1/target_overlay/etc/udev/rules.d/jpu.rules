@@ -1,2 +1,0 @@
-KERNEL=="linux,cma", SUBSYSTEM=="dma_heap", MODE="0666"
-KERNEL=="jpu0", SUBSYSTEM=="*", MODE="0666"

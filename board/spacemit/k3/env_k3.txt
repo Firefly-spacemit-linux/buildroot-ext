@@ -7,4 +7,3 @@ dtb_dir=
 
 ramdisk_addr=0x130000000
 loglevel=8
-commonargs=setenv bootargs clk_ignore_unused nohlt

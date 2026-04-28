@@ -1,0 +1,16 @@
+#!/bin/sh
+
+KERNEL_VERSION=$(uname -r)
+
+case "$1" in
+    start)
+        echo "Running depmod for $KERNEL_VERSION..."
+        depmod -a $KERNEL_VERSION
+        ;;
+    stop|restart|reload)
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|reload}"
+        exit 1
+esac
+exit $?

@@ -1,0 +1,5 @@
+config BR2_PACKAGE_K3X_CAM
+	bool "k3x-cam"
+	default y
+	help
+	  Spacemit k3x camera demo test
