@@ -1,0 +1,62 @@
+#!/bin/sh
+
+LED_BASE="/sys/class/leds"
+
+# Write a value to a LED sysfs attribute, skip if the file does not exist
+write_led() {
+    local led_path="$1"
+    local attr="$2"
+    local val="$3"
+    if [ -f "${led_path}/${attr}" ]; then
+        echo "${val}" > "${led_path}/${attr}" 2>/dev/null
+    fi
+}
+
+# Configure green LED: light up only at 1000M, no tx/rx blink
+configure_green_led() {
+    local led_path="$1"
+
+    write_led "${led_path}" trigger     netdev
+    sleep 0.5
+    write_led "${led_path}" link_10     0
+    write_led "${led_path}" link_100    0
+    write_led "${led_path}" link_1000   1
+    write_led "${led_path}" tx          0
+    write_led "${led_path}" rx          0
+}
+
+# Configure yellow LED: blink on tx/rx activity, no link-speed indication
+configure_yellow_led() {
+    local led_path="$1"
+
+    write_led "${led_path}" trigger     netdev
+    sleep 0.5
+    write_led "${led_path}" link_10     0
+    write_led "${led_path}" link_100    0
+    write_led "${led_path}" link_1000   0
+    write_led "${led_path}" tx          1
+    write_led "${led_path}" rx          1
+}
+
+start() {
+    printf "Starting GMAC LED: "
+    # Iterate over all possible GMAC instances (stmmac-0 ~ stmmac-3)
+    for gmac_id in 0 1 2 3; do
+        ls "${LED_BASE}/stmmac-${gmac_id}:"* > /dev/null 2>&1 || continue
+
+        for led_path in "${LED_BASE}/stmmac-${gmac_id}:"*":green:lan"; do
+            [ -d "${led_path}" ] && configure_green_led "${led_path}"
+        done
+
+        for led_path in "${LED_BASE}/stmmac-${gmac_id}:"*":yellow:lan"; do
+            [ -d "${led_path}" ] && configure_yellow_led "${led_path}"
+        done
+    done
+    echo "OK"
+}
+
+case "$1" in
+    start|restart) start ;;
+    stop) printf "Stopping GMAC LED: "; echo "OK" ;;
+    *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
