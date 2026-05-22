@@ -21,7 +21,7 @@ endef
 
 # Toolchain configuration
 ESOS_TOOLCHAIN_NAME = spacemit-toolchain-elf-newlib-x86_64-v1.0.9
-ESOS_TOOLCHAIN_DIR = $(@D)/tools/toolchain/$(ESOS_TOOLCHAIN_NAME)
+ESOS_TOOLCHAIN_DIR = $(@D)/tools/toolchain
 
 # Configure step: equivalent to ./build_top.sh config with rt24 chip selection (non-interactive)
 define ESOS_CONFIGURE_CMDS
@@ -36,8 +36,15 @@ define ESOS_CONFIGURE_CMDS
 	@cat $(@D)/bsp/spacemit/.esos_top.config
 	@echo "INFO: -------------------------------------------------------------------------"
 	@echo "INFO: prepare to toolchain ..."
-	if [ ! -d "$(ESOS_TOOLCHAIN_DIR)" ]; then \
-		cd $(@D)/tools/toolchain/ && \
+	mkdir -p $(ESOS_TOOLCHAIN_DIR)
+	if [ ! -d "$(ESOS_TOOLCHAIN_DIR)/$(ESOS_TOOLCHAIN_NAME)" ]; then \
+		cd $(ESOS_TOOLCHAIN_DIR) && \
+		if [ ! -f "$(ESOS_TOOLCHAIN_NAME).tar.xz" ]; then \
+			echo "INFO: Downloading toolchain from http://archive.spacemit.com/toolchain/$(ESOS_TOOLCHAIN_NAME).tar.xz ..." && \
+			(wget http://archive.spacemit.com/toolchain/$(ESOS_TOOLCHAIN_NAME).tar.xz || \
+			curl -L -o $(ESOS_TOOLCHAIN_NAME).tar.xz http://archive.spacemit.com/toolchain/$(ESOS_TOOLCHAIN_NAME).tar.xz); \
+		fi && \
+		echo "INFO: Extracting toolchain ..." && \
 		tar -xf $(ESOS_TOOLCHAIN_NAME).tar.xz && \
 		cd -; \
 	fi
