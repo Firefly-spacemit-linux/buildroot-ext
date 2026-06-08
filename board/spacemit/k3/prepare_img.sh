@@ -81,6 +81,8 @@ override_rootfs_img() {
     if [ -f "$SRC_ROOTFS_FILE" ]; then
         cp -rf ${SRC_ROOTFS_FILE} ${TARGET_ROOTFS_FILE}
         echo "Successfully overridden ${TARGET_ROOTFS_FILE} with ${SRC_ROOTFS_FILE}"
+	e2fsck -f ${TARGET_ROOTFS_FILE}
+	resize2fs ${TARGET_ROOTFS_FILE}
     fi
 }
 
