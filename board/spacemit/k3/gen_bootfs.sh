@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Generate bootfs.img after Buildroot installs the Linux image and DTBs.
+# Generate the boot filesystem image after Buildroot installs Linux and DTBs.
 set -eu
 
 IMAGES_DIR=$1
@@ -13,7 +13,6 @@ PARTITIONS_FILE="$DEVICE_DIR/partition_universal.json"
 UENV_FILE="$DEVICE_DIR/env_k3.txt"
 LOGO_FILE="$DEVICE_DIR/firefly.bmp"
 BOOTFS_DIR="$IMAGES_DIR/bootfs"
-BOOTFS_IMAGE="$IMAGES_DIR/bootfs.img"
 KERNEL_IMAGE="$IMAGES_DIR/$KERNEL_IMAGE_NAME"
 
 get_ramdisk_name() {
@@ -45,13 +44,32 @@ if [ -z "$FIRST_DTB" ]; then
 	exit 1
 fi
 
-BOOTFS_SIZE=$("$HOST_DIR/bin/jq" -r \
-	'.partitions[] | select(.name == "bootfs") | .size' \
+BOOTFS_PARTITION_COUNT=$("$HOST_DIR/bin/jq" -r \
+	'[.partitions[] | select(.name == "bootfs")] | length' \
 	"$PARTITIONS_FILE")
-if [ -z "$BOOTFS_SIZE" ] || [ "$BOOTFS_SIZE" = null ]; then
+if [ "$BOOTFS_PARTITION_COUNT" -ne 1 ]; then
+	echo "Expected exactly one bootfs partition in $PARTITIONS_FILE" >&2
+	exit 1
+fi
+
+BOOTFS_SIZE=$("$HOST_DIR/bin/jq" -r \
+	'.partitions[] | select(.name == "bootfs") | .size // empty' \
+	"$PARTITIONS_FILE")
+BOOTFS_IMAGE_NAME=$("$HOST_DIR/bin/jq" -r \
+	'.partitions[] | select(.name == "bootfs") | .image // empty' \
+	"$PARTITIONS_FILE")
+
+if [ -z "$BOOTFS_SIZE" ]; then
 	echo "Bootfs partition size is not defined in $PARTITIONS_FILE" >&2
 	exit 1
 fi
+case "$BOOTFS_IMAGE_NAME" in
+	""|.|..|*/*)
+		echo "Invalid bootfs image name in $PARTITIONS_FILE: $BOOTFS_IMAGE_NAME" >&2
+		exit 1
+		;;
+esac
+BOOTFS_IMAGE="$IMAGES_DIR/$BOOTFS_IMAGE_NAME"
 
 RAMDISK_NAME=$(get_ramdisk_name)
 RAMDISK_FILE=
@@ -69,7 +87,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Generating bootfs.img after Linux image installation"
+echo "Generating $BOOTFS_IMAGE_NAME after Linux image installation"
 rm -rf "$BOOTFS_DIR"
 mkdir -p "$BOOTFS_DIR"
 rm -f "$BOOTFS_IMAGE"
