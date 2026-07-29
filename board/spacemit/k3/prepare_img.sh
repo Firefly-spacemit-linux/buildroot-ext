@@ -333,6 +333,7 @@ pack_image_zip() {
     cp -f ${IMGS_DIR}/bootinfo_*.bin ${IMGS_DIR}/factory/
     cp -f ${DEVICE_DIR}/fastboot.yaml ${IMGS_DIR}/
     cp -f ${DEVICE_DIR}/partition_*.json ${IMGS_DIR}/
+    cp -f ${DEVICE_DIR}/ec.bin ${IMGS_DIR}/
     #cp -f ${DEVICE_DIR}/partition_universal.json ${IMGS_DIR}/
     cd ${IMGS_DIR}
     echo "Firmware archive: ${TARGET_IMAGE_ZIP##*/}"
@@ -342,6 +343,7 @@ pack_image_zip() {
         esos.itb \
         env.bin \
         "${BOOTFS_IMAGE_NAME}" \
+        ec.bin \
         rootfs.ext4 \
         partition_*.json \
         fastboot.yaml \

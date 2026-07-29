@@ -17,14 +17,30 @@ for x in $(cat /proc/cmdline); do
 			init=${x#init=}
 			;;
 		root=PARTUUID=*)
-			sleep 1
 			part_val=${x#root=PARTUUID=}
-			ROOT=$(blkid | grep -i "$part_val" | awk -F ':' '{print $1}')
+			cnt=0
+			while [ $cnt -lt 100 ]; do
+				ROOT=$(blkid | grep -i "$part_val" | awk -F ':' '{print $1}')
+				if [ -n "$ROOT" ]; then
+					echo "find PARTUUID=$part_val -> $ROOT at retry $cnt"
+					break
+				fi
+				sleep 0.1
+				let cnt++
+			done
 			;;
 		root=UUID=*)
-			sleep 1
-			ROOT=${x#root=UUID=}
-			ROOT=$(blkid | grep "$ROOT" | awk -F ':' '{print $1}')
+			uuid_val=${x#root=UUID=}
+			cnt=0
+			while [ $cnt -lt 100 ]; do
+				ROOT=$(blkid | grep "$uuid_val" | awk -F ':' '{print $1}')
+				if [ -n "$ROOT" ]; then
+					echo "find UUID=$uuid_val -> $ROOT at retry $cnt"
+					break
+				fi
+				sleep 0.1
+				let cnt++
+			done
 			;;
 		root=ubi*)
 			# Parse parameters like root=ubi0:rootfs
