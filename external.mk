@@ -5,7 +5,17 @@ include $(sort $(wildcard $(BR2_EXTERNAL_Bianbu_PATH)/package/*/*.mk))
 # linux-rebuild immediately produces an image that can be flashed for debugging.
 ifneq ($(findstring /bsp-src/linux-6.18,$(call qstrip,$(BR2_LINUX_KERNEL_CUSTOM_DIR_LOCATION))),)
 K3_BOOTFS_SCRIPT := $(BR2_EXTERNAL_Bianbu_PATH)/board/spacemit/k3/gen_bootfs.sh
-LINUX_DEPENDENCIES += host-jq host-dosfstools host-mtools
+K3_LINUX_BOOTFS_DEPENDENCIES := \
+	host-jq \
+	host-dosfstools \
+	host-mtools \
+	host-genimage \
+	host-e2fsprogs
+
+# external.mk is included after the Linux package infrastructure has expanded
+# LINUX_DEPENDENCIES. Attach the tools to the source synchronization stamp so
+# both linux and linux-rebuild finish them before starting any Linux stage.
+$(LINUX_TARGET_RSYNC): | $(K3_LINUX_BOOTFS_DEPENDENCIES)
 
 define K3_LINUX_GENERATE_BOOTFS
 	$(Q)$(SHELL) $(K3_BOOTFS_SCRIPT) \
