@@ -60,7 +60,6 @@
                 "fw_dynamic.itb",
                 "u-boot.itb",
                 "esos.itb",
-                "bootloader.img",
                 "bootfs.img",
 		"rootfs.ext4",
                 "/partition_.+.json$/"]
