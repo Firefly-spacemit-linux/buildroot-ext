@@ -7,7 +7,22 @@ set -e
 IMGS_DIR=$1
 DEVICE_DIR=$(cd "$(dirname "$0")" && pwd)
 
-PARTITIONS_FILE="$DEVICE_DIR/partition_universal.json"
+K3_OVERLAYROOT=0
+if [ -r "${BR2_CONFIG:-}" ] && \
+    grep -q '^BR2_TARGET_K3_ROOTFS_OVERLAY=y$' "$BR2_CONFIG"; then
+    K3_OVERLAYROOT=1
+fi
+
+BASE_PARTITIONS_TEMPLATE="$DEVICE_DIR/partition_universal.json"
+OVERLAY_PARTITIONS_TEMPLATE="$DEVICE_DIR/partition_firefly_universal.json"
+if [ "$K3_OVERLAYROOT" -eq 1 ]; then
+    PARTITIONS_TEMPLATE="$OVERLAY_PARTITIONS_TEMPLATE"
+else
+    PARTITIONS_TEMPLATE="$BASE_PARTITIONS_TEMPLATE"
+fi
+PARTITIONS_FILE="$PARTITIONS_TEMPLATE"
+
+echo "Using partition template: $(basename "$PARTITIONS_TEMPLATE")"
 
 get_partition_image_name() {
     local partition_name=$1 partition_count image_name
@@ -35,6 +50,21 @@ get_partition_image_name() {
 
 BOOTFS_IMAGE_NAME=$(get_partition_image_name bootfs)
 BOOTFS_IMAGE_FILE="$IMGS_DIR/$BOOTFS_IMAGE_NAME"
+
+MISC_IMAGE_NAME=
+MISC_IMAGE_FILE=
+MISC_IMAGE_SIZE=
+if [ "$K3_OVERLAYROOT" -eq 1 ]; then
+    MISC_IMAGE_NAME=$(get_partition_image_name misc)
+    MISC_IMAGE_FILE="$IMGS_DIR/$MISC_IMAGE_NAME"
+    MISC_IMAGE_SIZE=$($IMGS_DIR/../host/bin/jq -r \
+        '.partitions[] | select(.name == "misc") | .size // empty' \
+        "$PARTITIONS_TEMPLATE")
+    if [ -z "$MISC_IMAGE_SIZE" ]; then
+        echo "Misc partition size is not defined in $PARTITIONS_TEMPLATE" >&2
+        exit 1
+    fi
+fi
 
 find_manifest_file() {
     local sdk_dir manifest_file
@@ -284,8 +314,6 @@ SDCARD_IMAGE="${FIRMWARE_NAME}-sdcard.img"
 override_rootfs_img() {
     # Use the external rootfs directly without making another large copy.
     if [ -f "$SRC_ROOTFS_FILE" ]; then
-        e2fsck -fy "$SRC_ROOTFS_FILE"
-        resize2fs "$SRC_ROOTFS_FILE"
         rm -f "$IMGS_DIR/rootfs.ext2" "$IMGS_DIR/rootfs.ext4"
         ln -s "$SRC_ROOTFS_FILE" "$IMGS_DIR/rootfs.ext4"
         EXTERNAL_ROOTFS_LINK="$IMGS_DIR/rootfs.ext4"
@@ -306,6 +334,78 @@ gen_sub_images() {
     #env.bin
     cp -f ${IMGS_DIR}/u-boot-env-default.bin ${IMGS_DIR}/env.bin
 
+    if [ "$K3_OVERLAYROOT" -eq 1 ]; then
+        rm -f "$MISC_IMAGE_FILE"
+        truncate -s "$MISC_IMAGE_SIZE" "$MISC_IMAGE_FILE"
+    else
+        rm -f "$IMGS_DIR/misc.img"
+    fi
+
+}
+
+generate_partitions_file() {
+    local rootfs_file="$IMGS_DIR/rootfs.ext4"
+    local rootfs_bytes alignment_bytes rootfs_size_bytes rootfs_size_mib
+    local rootfs_offset rootfs_offset_mib userdata_offset_mib output_file
+    local last_partition
+
+    if [ ! -f "$rootfs_file" ]; then
+        echo "Missing rootfs image: $rootfs_file" >&2
+        return 1
+    fi
+
+    rootfs_bytes=$(stat -Lc %s "$rootfs_file")
+    alignment_bytes=$((4 * 1024 * 1024))
+    rootfs_size_bytes=$((
+        (rootfs_bytes + alignment_bytes - 1) / alignment_bytes * alignment_bytes
+    ))
+    rootfs_size_mib=$((rootfs_size_bytes / 1024 / 1024))
+
+    rootfs_offset=$($IMGS_DIR/../host/bin/jq -r \
+        '.partitions[] | select(.name == "rootfs") | .offset // empty' \
+        "$PARTITIONS_TEMPLATE")
+    case "$rootfs_offset" in
+        *M) rootfs_offset_mib=${rootfs_offset%M} ;;
+        *)
+            echo "Rootfs offset must use MiB units: $rootfs_offset" >&2
+            return 1
+            ;;
+    esac
+    case "$rootfs_offset_mib" in
+        ""|*[!0-9]*)
+            echo "Invalid rootfs offset: $rootfs_offset" >&2
+            return 1
+            ;;
+    esac
+
+    output_file="$IMGS_DIR/partition_universal.json"
+    if [ "$K3_OVERLAYROOT" -eq 1 ]; then
+        userdata_offset_mib=$((rootfs_offset_mib + rootfs_size_mib))
+        $IMGS_DIR/../host/bin/jq \
+            --arg rootfs_size "${rootfs_size_mib}M" \
+            --arg userdata_offset "${userdata_offset_mib}M" \
+            '(.partitions[] | select(.name == "rootfs") | .size) = $rootfs_size |
+             (.partitions[] | select(.name == "userdata") | .offset) = $userdata_offset' \
+            "$PARTITIONS_TEMPLATE" > "$output_file"
+        echo "Rootfs partition size: ${rootfs_size_mib}M"
+        echo "Userdata partition offset: ${userdata_offset_mib}M"
+    else
+        last_partition=$($IMGS_DIR/../host/bin/jq -r \
+            '.partitions[-1].name // empty' "$PARTITIONS_TEMPLATE")
+        if [ "$last_partition" != "rootfs" ]; then
+            echo "Rootfs must be the last partition in $PARTITIONS_TEMPLATE" >&2
+            return 1
+        fi
+        $IMGS_DIR/../host/bin/jq \
+            --arg rootfs_sdcard_size "${rootfs_size_mib}M" \
+            '(.partitions[] | select(.name == "rootfs") | .size) = "-" |
+             (.partitions[] | select(.name == "rootfs") | .sdcard_size) = $rootfs_sdcard_size' \
+            "$PARTITIONS_TEMPLATE" > "$output_file"
+        echo "Rootfs partition uses the remaining device space"
+        echo "Rootfs SD card image size: ${rootfs_size_mib}M"
+    fi
+
+    PARTITIONS_FILE="$output_file"
 }
 
 update_genimage_cfg() {
@@ -324,6 +424,9 @@ gen_sdcard_img() {
 }
 
 pack_image_zip() {
+    local partition_file partition_name
+    local -a image_files
+
     echo "Starting to pack images................................."
     rm -f ${TARGET_IMAGE_ZIP}
     rm -rf ${IMGS_DIR}/factory
@@ -332,19 +435,35 @@ pack_image_zip() {
     cp -f ${IMGS_DIR}/FSBL.bin ${IMGS_DIR}/factory/
     cp -f ${IMGS_DIR}/bootinfo_*.bin ${IMGS_DIR}/factory/
     cp -f ${DEVICE_DIR}/fastboot.yaml ${IMGS_DIR}/
-    cp -f ${DEVICE_DIR}/partition_*.json ${IMGS_DIR}/
     cp -f ${DEVICE_DIR}/ec.bin ${IMGS_DIR}/
-    #cp -f ${DEVICE_DIR}/partition_universal.json ${IMGS_DIR}/
+    rm -f "$IMGS_DIR/partition_firefly_universal.json"
+    for partition_file in "$DEVICE_DIR"/partition_*.json; do
+        partition_name=$(basename "$partition_file")
+        case "$partition_name" in
+            partition_universal.json|partition_firefly_universal.json)
+                continue
+                ;;
+        esac
+        cp -f "$partition_file" "$IMGS_DIR/"
+    done
+
+    image_files=(
+        fw_dynamic.itb
+        u-boot.itb
+        esos.itb
+        env.bin
+        "$BOOTFS_IMAGE_NAME"
+        ec.bin
+        rootfs.ext4
+    )
+    if [ "$K3_OVERLAYROOT" -eq 1 ]; then
+        image_files+=("$MISC_IMAGE_NAME")
+    fi
+
     cd ${IMGS_DIR}
     echo "Firmware archive: ${TARGET_IMAGE_ZIP##*/}"
     zip ${TARGET_IMAGE_ZIP} \
-        fw_dynamic.itb \
-        u-boot.itb \
-        esos.itb \
-        env.bin \
-        "${BOOTFS_IMAGE_NAME}" \
-        ec.bin \
-        rootfs.ext4 \
+        "${image_files[@]}" \
         partition_*.json \
         fastboot.yaml \
         genimage.cfg \
@@ -368,7 +487,13 @@ pack_image_zip() {
 #include env and Image
 gen_sub_images
 
-# The bootfs image is generated by the Linux package's post-install-images hook.
+# Regenerate bootfs after rootfs-cpio so it contains the current initramfs.
+"$DEVICE_DIR/gen_bootfs.sh" \
+    "$IMGS_DIR" \
+    "$SDK_DIR/bsp-src/linux-6.18" \
+    "$2" \
+    "$IMGS_DIR/../host"
+
 if [ ! -f "$BOOTFS_IMAGE_FILE" ]; then
     echo "Missing $BOOTFS_IMAGE_FILE; rebuild the Linux package first" >&2
     exit 1
@@ -376,6 +501,9 @@ fi
 
 #For Debian or Ubuntu rootfs override
 override_rootfs_img
+
+# Generate the final partition table from the actual rootfs image size.
+generate_partitions_file
 
 #Update genimage cfg because pack_image_zip dependis on it
 update_genimage_cfg

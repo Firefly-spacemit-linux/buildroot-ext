@@ -1,136 +1,185 @@
 #!/bin/sh
 
-mount -t proc proc /proc
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+ROOT_SPEC=
 ROOT=
+ROOTFSTYPE=ext4
 NFSROOT=
 UBI_MTD=
 UBI_DEV=
 UBI_VOL=
-ROOTFSTYPE=
-export init=/sbin/init
+K3_OVERLAYROOT=0
+init=/sbin/init
+
+log()
+{
+	echo "k3-init: $*"
+}
+
+emergency_shell()
+{
+	log "$*"
+	log "Starting an emergency shell"
+	exec sh
+}
+
+resolve_device()
+{
+	spec=$1
+	case "$spec" in
+		PARTUUID=*|UUID=*|PARTLABEL=*|LABEL=*)
+			blkid -t "$spec" -o device 2>/dev/null | head -n 1
+			;;
+		/dev/*)
+			printf '%s\n' "$spec"
+			;;
+		*)
+			printf '%s\n' "$spec"
+			;;
+	esac
+}
+
+wait_for_device()
+{
+	spec=$1
+	count=0
+	while [ "$count" -lt 100 ]; do
+		device=$(resolve_device "$spec")
+		if [ -n "$device" ] && [ -b "$device" ]; then
+			printf '%s\n' "$device"
+			return 0
+		fi
+		sleep 0.1
+		count=$((count + 1))
+	done
+	return 1
+}
+
+validate_root_init()
+{
+	root=$1
+	run-init -n "$root" "$init" >/dev/null 2>&1
+}
+
+grow_rootfs()
+{
+	if [ "$ROOTFSTYPE" != "ext4" ]; then
+		return 0
+	fi
+
+	log "Expanding the rootfs filesystem to fill its partition"
+	if ! resize2fs "$ROOT"; then
+		log "Warning: rootfs filesystem expansion failed; continuing boot"
+	fi
+}
+
+load_overlay_config()
+{
+	config=/etc/k3-overlayroot.conf
+	if [ -r "$config" ]; then
+		. "$config"
+	fi
+	case "$K3_OVERLAYROOT" in
+		0|1)
+			;;
+		*)
+			emergency_shell "Invalid K3_OVERLAYROOT value: $K3_OVERLAYROOT"
+			;;
+	esac
+}
+
+finish_boot()
+{
+	validate_root_init /rootfs || emergency_shell "Rootfs init validation failed: $init"
+
+	mkdir -p /rootfs/proc /rootfs/sys /rootfs/run /rootfs/dev
+	mount -n -o move /proc /rootfs/proc || emergency_shell "Cannot move /proc"
+	mount -n -o move /sys /rootfs/sys || emergency_shell "Cannot move /sys"
+	mount -n -o move /run /rootfs/run || emergency_shell "Cannot move /run"
+	mount -n -o move /dev /rootfs/dev || emergency_shell "Cannot move /dev"
+	mount -t debugfs debugfs /rootfs/sys/kernel/debug 2>/dev/null || true
+
+	exec run-init -c /dev/console /rootfs "$init" "$@" \
+		< /rootfs/dev/console > /rootfs/dev/console 2>&1
+	emergency_shell "run-init failed"
+}
+
+mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs -o nosuid,mode=0755 devtmpfs /dev
+mkdir -p /dev/pts /dev/shm /tmp /run /rootfs /root-ro /userdata
+mount -t devpts -o defaults,mode=644,ptmxmode=666 devpts /dev/pts
+mount -t tmpfs tmpfs /dev/shm
+mount -t tmpfs -o mode=0755,nosuid,nodev,size=10% tmpfs /run
+load_overlay_config
 
-for x in $(cat /proc/cmdline); do
-	case $x in
+for argument in $(cat /proc/cmdline); do
+	case "$argument" in
 		init=*)
-			init=${x#init=}
-			;;
-		root=PARTUUID=*)
-			part_val=${x#root=PARTUUID=}
-			cnt=0
-			while [ $cnt -lt 100 ]; do
-				ROOT=$(blkid | grep -i "$part_val" | awk -F ':' '{print $1}')
-				if [ -n "$ROOT" ]; then
-					echo "find PARTUUID=$part_val -> $ROOT at retry $cnt"
-					break
-				fi
-				sleep 0.1
-				let cnt++
-			done
-			;;
-		root=UUID=*)
-			uuid_val=${x#root=UUID=}
-			cnt=0
-			while [ $cnt -lt 100 ]; do
-				ROOT=$(blkid | grep "$uuid_val" | awk -F ':' '{print $1}')
-				if [ -n "$ROOT" ]; then
-					echo "find UUID=$uuid_val -> $ROOT at retry $cnt"
-					break
-				fi
-				sleep 0.1
-				let cnt++
-			done
+			init=${argument#init=}
 			;;
 		root=ubi*)
-			# Parse parameters like root=ubi0:rootfs
-			UBI_ROOT=${x#root=}
-			UBI_DEV=$(echo $UBI_ROOT | cut -d ':' -f 1)
-			UBI_VOL=$(echo $UBI_ROOT | cut -d ':' -f 2)
+			UBI_ROOT=${argument#root=}
+			UBI_DEV=$(echo "$UBI_ROOT" | cut -d ':' -f 1)
+			UBI_VOL=$(echo "$UBI_ROOT" | cut -d ':' -f 2)
 			UBI_DEV=${UBI_DEV#ubi}
-			ROOT="ubi"
+			ROOT_SPEC=ubi
 			;;
 		root=*)
-			ROOT=${x#root=}
+			ROOT_SPEC=${argument#root=}
 			;;
 		rootfstype=*)
-			ROOTFSTYPE=${x#rootfstype=}
+			ROOTFSTYPE=${argument#rootfstype=}
 			;;
 		ubi.mtd=*)
-			UBI_MTD=${x#ubi.mtd=}
+			UBI_MTD=${argument#ubi.mtd=}
 			;;
 		nfsroot=*)
-			NFSROOT=${x#nfsroot=}
+			NFSROOT=${argument#nfsroot=}
 			;;
 	esac
 done
 
-mkdir -p /dev/pts
-mkdir -p /dev/shm
-mount -t devpts -o defaults,mode=644,ptmxmode=666 devpts /dev/pts
-mount -t tmpfs tmpfs /dev/shm
-mount -t tmpfs tmpfs /tmp
-mount -t tmpfs tmpfs /run
-
-if [ "x${ROOT}" = "x" ]; then
+if [ -z "$ROOT_SPEC" ]; then
 	exec /sbin/init
 fi
 
-export ROOT
-
-mkdir /rootfs
-if [ $ROOT == "/dev/nfs" ] && [ "x${NFSROOT}" != "x" ];then
+if [ "$ROOT_SPEC" = "/dev/nfs" ] && [ -n "$NFSROOT" ]; then
 	/sbin/ifup -a
-	mount -t nfs -o nolock $NFSROOT /rootfs
-elif [ $ROOT == "ubi" ] && [ "x${UBI_MTD}" != "x" ] && [ "x${UBI_DEV}" != "x" ] && [ "x${UBI_VOL}" != "x" ];then
-	echo "Mounting UBI/UBIFS filesystem"
-	# Attach UBI device if not already attached
-	if [ ! -e /dev/ubi${UBI_DEV} ]; then
-		echo "Attaching UBI device: mtd${UBI_MTD} -> ubi${UBI_DEV}"
-		ubiattach -m ${UBI_MTD} -d ${UBI_DEV}
-		sleep 1
-	fi
-
-	# Mount UBIFS
-	echo "Mounting UBIFS volume: ubi${UBI_DEV}:${UBI_VOL} -> /rootfs"
-	mount -t ubifs ubi${UBI_DEV}:${UBI_VOL} /rootfs
-
-	# Create basic device nodes if needed
-	if [ ! -e /rootfs/dev/console ]; then
-		/bin/mknod /rootfs/dev/console c 5 1
-	fi
-	if [ ! -e /rootfs/dev/null ]; then
-		/bin/mknod /rootfs/dev/null c 1 3
-	fi
-else
-	cnt=0
-	while [ $cnt -lt 100 ]
-	do
-		if [ ! -e $ROOT ];then
-			sleep 0.1
-		else
-			echo "find $ROOT: $cnt"
-			break
-		fi
-		let cnt++
-	done
-	e2fsck -y $ROOT
-	resize2fs $ROOT
-	mount $ROOT /rootfs/
-	if [ ! -e /rootfs/dev/console ]; then
-		/bin/mknod /rootfs/dev/console c 5 1
-	fi
-	if [ ! -e /rootfs/dev/null ]; then
-		/bin/mknod /rootfs/dev/null c 1 3
-	fi
+	mount -t nfs -o nolock "$NFSROOT" /rootfs || emergency_shell "NFS root mount failed"
+	finish_boot "$@"
 fi
 
-mount -n -o move /proc /rootfs/proc
-mount -n -o move /sys /rootfs/sys
-mount -n -o move /run /rootfs/run
-mount -n -o move /tmp /rootfs/tmp
-mount -n -o move /dev /rootfs/dev
-mount -t debugfs debugfs /rootfs/sys/kernel/debug
+if [ "$ROOT_SPEC" = "ubi" ] && [ -n "$UBI_MTD" ] && [ -n "$UBI_DEV" ] && [ -n "$UBI_VOL" ]; then
+	if [ ! -e "/dev/ubi${UBI_DEV}" ]; then
+		ubiattach -m "$UBI_MTD" -d "$UBI_DEV" || emergency_shell "UBI attach failed"
+		sleep 1
+	fi
+	mount -t ubifs "ubi${UBI_DEV}:${UBI_VOL}" /rootfs || emergency_shell "UBIFS root mount failed"
+	finish_boot "$@"
+fi
 
-exec run-init /rootfs "${init}" "$@" <"/rootfs/dev/console" >"/rootfs/dev/console" 2>&1
-echo "Something went badly wrong in the initramfs."
+ROOT=$(wait_for_device "$ROOT_SPEC") || emergency_shell "Root device was not found: $ROOT_SPEC"
+if [ "$K3_OVERLAYROOT" -eq 1 ]; then
+	log "Mounting rootfs read-only from $ROOT"
+	mount -t "$ROOTFSTYPE" -o ro,noload "$ROOT" /rootfs || emergency_shell "Rootfs mount failed"
+else
+	log "Mounting rootfs read-write from $ROOT"
+	mount -t "$ROOTFSTYPE" -o rw "$ROOT" /rootfs || emergency_shell "Rootfs mount failed"
+	grow_rootfs
+fi
+validate_root_init /rootfs || emergency_shell "Rootfs init is missing or not executable: $init"
+
+if [ "$K3_OVERLAYROOT" -eq 1 ]; then
+	export K3_ROOT_DEVICE="$ROOT"
+	export K3_ROOT_INIT="$init"
+	if ! /sbin/k3-overlayroot; then
+		emergency_shell "Overlay root setup failed"
+	fi
+else
+	log "Rootfs overlay is disabled by configuration"
+fi
+
+finish_boot "$@"

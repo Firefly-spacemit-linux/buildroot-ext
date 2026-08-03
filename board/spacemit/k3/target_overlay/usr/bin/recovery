@@ -1,0 +1,53 @@
+#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+MISC_FORMAT_REQUEST="K3_FORMAT_USERDATA_REQUESTED_V1"
+
+usage()
+{
+	cat >&2 <<'EOF'
+Usage: recovery reset
+
+WARNING: 'recovery reset' schedules a destructive factory reset.
+All data in the userdata partition will be permanently erased during the
+next boot, and the system will reboot immediately after recording the request.
+
+Run exactly 'recovery reset' as root only when this operation is intended.
+No misc partition changes were made.
+EOF
+}
+
+if [ "$#" -ne 1 ] || [ "$1" != "reset" ]; then
+	usage
+	exit 2
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "Error: 'recovery reset' must be run as root." >&2
+	exit 1
+fi
+
+misc_dev=$(blkid -t PARTLABEL=misc -o device 2>/dev/null | head -n 1)
+if [ -z "$misc_dev" ] || [ ! -b "$misc_dev" ]; then
+	echo "Error: cannot find the misc partition; reset was not scheduled." >&2
+	exit 1
+fi
+
+printf '%s\n' "$MISC_FORMAT_REQUEST" | \
+	dd of="$misc_dev" bs=4096 count=1 conv=sync 2>/dev/null || {
+		echo "Error: cannot write the factory reset request to $misc_dev." >&2
+		exit 1
+	}
+sync
+
+recorded_state=$(dd if="$misc_dev" bs=64 count=1 2>/dev/null | tr -d '\000\r\n')
+if [ "$recorded_state" != "$MISC_FORMAT_REQUEST" ]; then
+	echo "Error: factory reset request verification failed; not rebooting." >&2
+	exit 1
+fi
+
+echo "Factory reset request verified in $misc_dev."
+echo "Rebooting now; userdata will be formatted during the next boot."
+exec reboot

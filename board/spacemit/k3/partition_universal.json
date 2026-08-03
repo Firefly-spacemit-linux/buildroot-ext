@@ -55,11 +55,12 @@
       "compress": "gzip-5"
     },
     {
-        "name": "rootfs",
-        "offset": "268M",
-        "size": "-",
-        "image": "rootfs.ext4",
-        "compress": "gzip-5"
+      "name": "rootfs",
+      "offset": "268M",
+      "size": "-",
+      "sdcard_size": "8192M",
+      "image": "rootfs.ext4",
+      "compress": "gzip-5"
     }
   ]
 }

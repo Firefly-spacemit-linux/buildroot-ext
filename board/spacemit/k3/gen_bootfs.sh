@@ -73,7 +73,11 @@ BOOTFS_IMAGE="$IMAGES_DIR/$BOOTFS_IMAGE_NAME"
 
 RAMDISK_NAME=$(get_ramdisk_name)
 RAMDISK_FILE=
-if [ -d "$LINUX_SOURCE_DIR" ]; then
+if [ -f "$IMAGES_DIR/rootfs.cpio.gz" ]; then
+	RAMDISK_FILE="$IMAGES_DIR/rootfs.cpio.gz"
+elif [ -f "$IMAGES_DIR/rootfs.cpio" ]; then
+	RAMDISK_FILE="$IMAGES_DIR/rootfs.cpio"
+elif [ -d "$LINUX_SOURCE_DIR" ]; then
 	RAMDISK_FILE=$(find "$LINUX_SOURCE_DIR" -type f \
 		-name "$RAMDISK_NAME" -print -quit)
 fi

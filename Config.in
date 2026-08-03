@@ -1,6 +1,15 @@
 
 menu "Bianbu config"
 
+config BR2_TARGET_K3_ROOTFS_OVERLAY
+	bool "Enable the K3 rootfs overlay"
+	help
+	  Mount the root filesystem read-only and use the userdata
+	  partition as the persistent OverlayFS upper layer. This also
+	  enables the misc partition used to request a userdata reset.
+	  When disabled, rootfs is the final partition and uses the
+	  remaining block device space.
+
 source "$BR2_EXTERNAL_Bianbu_PATH/package/rtk-hciattach/Config.in"
 source "$BR2_EXTERNAL_Bianbu_PATH/package/mpp/Config.in"
 source "$BR2_EXTERNAL_Bianbu_PATH/package/img-gpu-powervr/Config.in"

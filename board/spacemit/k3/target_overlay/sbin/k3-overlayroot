@@ -1,0 +1,346 @@
+#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+ROOT_DEVICE=${K3_ROOT_DEVICE:-}
+ROOT_INIT=${K3_ROOT_INIT:-/sbin/init}
+ROOT_MOUNT=/rootfs
+ROOT_RO=/root-ro
+USERDATA_MOUNT=/userdata
+MISC_DEV=
+USERDATA_DEV=
+USERDATA_PERSISTENT=0
+FORMAT_USERDATA=0
+USERDATA_NEW=0
+USERDATA_FULL_REPAIR=0
+ROOTFS_UUID=
+ROOTFS_UUID_FILE=$USERDATA_MOUNT/.k3-rootfs-uuid
+USERDATA_DIR_INDEX_MARKER=$USERDATA_MOUNT/.k3-dir-index-v1
+MISC_FORMAT_REQUEST="K3_FORMAT_USERDATA_REQUESTED_V1"
+MISC_FORMAT_IN_PROGRESS="K3_FORMAT_USERDATA_IN_PROGRESS_V1"
+
+log()
+{
+	echo "k3-overlayroot: $*"
+}
+
+resolve_device()
+{
+	spec=$1
+	case "$spec" in
+		PARTUUID=*|UUID=*|PARTLABEL=*|LABEL=*)
+			blkid -t "$spec" -o device 2>/dev/null | head -n 1
+			;;
+		/dev/*)
+			printf '%s\n' "$spec"
+			;;
+		*)
+			printf '%s\n' "$spec"
+			;;
+	esac
+}
+
+wait_for_device()
+{
+	spec=$1
+	count=0
+	while [ "$count" -lt 100 ]; do
+		device=$(resolve_device "$spec")
+		if [ -n "$device" ] && [ -b "$device" ]; then
+			printf '%s\n' "$device"
+			return 0
+		fi
+		sleep 0.1
+		count=$((count + 1))
+	done
+	return 1
+}
+
+read_misc_state()
+{
+	dd if="$MISC_DEV" bs=64 count=1 2>/dev/null | tr -d '\000\r\n'
+}
+
+write_misc_state()
+{
+	state=$1
+	printf '%s\n' "$state" | dd of="$MISC_DEV" bs=4096 count=1 conv=sync 2>/dev/null || return 1
+	sync
+}
+
+clear_misc_state()
+{
+	dd if=/dev/zero of="$MISC_DEV" bs=4096 count=1 2>/dev/null || return 1
+	sync
+}
+
+e2fsck_succeeded()
+{
+	case "$1" in
+		0|1|2|3)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+repair_userdata_filesystem()
+{
+	log "Running a full automatic userdata filesystem repair"
+	/sbin/e2fsck -f -y -D "$USERDATA_DEV"
+	status=$?
+	if e2fsck_succeeded "$status"; then
+		USERDATA_FULL_REPAIR=1
+		sync
+		return 0
+	fi
+
+	log "Userdata filesystem repair failed with status $status"
+	return 1
+}
+
+check_userdata_filesystem()
+{
+	log "Checking the userdata filesystem"
+	/sbin/e2fsck -p "$USERDATA_DEV"
+	status=$?
+	if e2fsck_succeeded "$status"; then
+		return 0
+	fi
+
+	log "The safe userdata filesystem check could not repair all errors"
+	repair_userdata_filesystem
+}
+
+mount_userdata()
+{
+	mount -t ext4 -o rw "$USERDATA_DEV" "$USERDATA_MOUNT"
+}
+
+write_userdata_dir_index_marker()
+{
+	printf '%s\n' "K3_USERDATA_DIR_INDEX_V1" > "$USERDATA_DIR_INDEX_MARKER" || return 1
+	sync
+}
+
+prepare_userdata_directory_indexes()
+{
+	if [ "$USERDATA_NEW" -eq 1 ] || [ "$USERDATA_FULL_REPAIR" -eq 1 ]; then
+		write_userdata_dir_index_marker || true
+		return 0
+	fi
+	if [ -f "$USERDATA_DIR_INDEX_MARKER" ]; then
+		return 0
+	fi
+
+	log "Rebuilding userdata directory indexes"
+	umount "$USERDATA_MOUNT" || return 1
+	if ! repair_userdata_filesystem; then
+		return 1
+	fi
+	if ! mount_userdata; then
+		log "Userdata remount failed after directory index rebuild"
+		return 1
+	fi
+	write_userdata_dir_index_marker || true
+}
+
+validate_root_init()
+{
+	run-init -n "$ROOT_MOUNT" "$ROOT_INIT" >/dev/null 2>&1
+}
+
+create_overlay_dirs()
+{
+	mkdir -p "$USERDATA_MOUNT/rootfs_overlay" || return 1
+	mkdir -p "$USERDATA_MOUNT/rootfs_overlay-workdir/_" || return 1
+}
+
+reset_overlay_storage()
+{
+	rm -rf "$USERDATA_MOUNT/rootfs_overlay" || return 1
+	rm -rf "$USERDATA_MOUNT/rootfs_overlay-workdir" || return 1
+	create_overlay_dirs
+}
+
+write_rootfs_uuid()
+{
+	[ -n "$ROOTFS_UUID" ] || return 1
+	printf '%s\n' "$ROOTFS_UUID" > "${ROOTFS_UUID_FILE}.tmp" || return 1
+	mv "${ROOTFS_UUID_FILE}.tmp" "$ROOTFS_UUID_FILE" || return 1
+	sync
+}
+
+prepare_overlay_storage()
+{
+	if [ "$USERDATA_PERSISTENT" -ne 1 ]; then
+		create_overlay_dirs
+		return $?
+	fi
+
+	ROOTFS_UUID=$(blkid -s UUID -o value "$ROOT_DEVICE" 2>/dev/null || true)
+	if [ -z "$ROOTFS_UUID" ]; then
+		log "Cannot determine the rootfs UUID"
+		return 1
+	fi
+
+	stored_uuid=
+	if [ -f "$ROOTFS_UUID_FILE" ]; then
+		stored_uuid=$(head -n 1 "$ROOTFS_UUID_FILE" 2>/dev/null || true)
+	fi
+	if [ "$stored_uuid" = "$ROOTFS_UUID" ]; then
+		create_overlay_dirs
+		return $?
+	fi
+
+	log "Rootfs image changed; resetting the writable overlay"
+	reset_overlay_storage || return 1
+	write_rootfs_uuid
+}
+
+prepare_userdata()
+{
+	MISC_DEV=$(wait_for_device PARTLABEL=misc 2>/dev/null || true)
+	USERDATA_DEV=$(wait_for_device PARTLABEL=userdata 2>/dev/null || true)
+
+	[ -n "$USERDATA_DEV" ] || return 1
+
+	if [ -n "$MISC_DEV" ]; then
+		misc_state=$(read_misc_state)
+		case "$misc_state" in
+			"$MISC_FORMAT_REQUEST"|"$MISC_FORMAT_IN_PROGRESS")
+				FORMAT_USERDATA=1
+				;;
+		esac
+	fi
+
+	userdata_type=$(blkid -s TYPE -o value "$USERDATA_DEV" 2>/dev/null || true)
+	if [ "$FORMAT_USERDATA" -eq 1 ]; then
+		log "Formatting userdata due to a misc partition request"
+		if [ -n "$MISC_DEV" ]; then
+			write_misc_state "$MISC_FORMAT_IN_PROGRESS" || return 1
+		fi
+		/sbin/k3-mke2fs -t ext4 -F -L userdata "$USERDATA_DEV" || return 1
+		userdata_type=ext4
+		USERDATA_NEW=1
+	elif [ -z "$userdata_type" ]; then
+		log "Initializing the empty userdata partition"
+		/sbin/k3-mke2fs -t ext4 -F -L userdata "$USERDATA_DEV" || return 1
+		userdata_type=ext4
+		USERDATA_NEW=1
+	elif [ "$userdata_type" != "ext4" ]; then
+		log "Unsupported userdata filesystem: $userdata_type"
+		return 1
+	fi
+
+	if [ "$USERDATA_NEW" -ne 1 ] && ! check_userdata_filesystem; then
+		return 1
+	fi
+
+	if ! mount_userdata; then
+		log "Userdata mount failed; existing data will not be formatted"
+		return 1
+	fi
+	if ! prepare_userdata_directory_indexes; then
+		umount "$USERDATA_MOUNT" 2>/dev/null || true
+		return 1
+	fi
+	USERDATA_PERSISTENT=1
+
+	if [ "$FORMAT_USERDATA" -eq 1 ] && [ -n "$MISC_DEV" ]; then
+		clear_misc_state || return 1
+	fi
+	return 0
+}
+
+mount_overlay()
+{
+	mount -t overlay overlayroot \
+		-o lowerdir="$ROOT_RO",upperdir="$USERDATA_MOUNT/rootfs_overlay",workdir="$USERDATA_MOUNT/rootfs_overlay-workdir/_" \
+		"$ROOT_MOUNT"
+}
+
+try_overlay()
+{
+	mount_overlay || return 1
+	if validate_root_init; then
+		return 0
+	fi
+	log "The writable overlay hides or corrupts $ROOT_INIT"
+	umount "$ROOT_MOUNT" 2>/dev/null || return 1
+	return 1
+}
+
+use_temporary_overlay()
+{
+	umount "$ROOT_MOUNT" 2>/dev/null || true
+	umount "$USERDATA_MOUNT" 2>/dev/null || true
+	USERDATA_PERSISTENT=0
+
+	mount -t tmpfs -o mode=0755 tmpfs "$USERDATA_MOUNT" || return 1
+	create_overlay_dirs || return 1
+	try_overlay || return 1
+	log "Using a temporary userdata overlay"
+}
+
+prepare_merged_root()
+{
+	if [ -L "$ROOT_MOUNT/var/cache" ]; then
+		rm -f "$ROOT_MOUNT/var/cache" || return 1
+		mkdir -p "$ROOT_MOUNT/var/cache" || return 1
+	fi
+
+	mkdir -p "$ROOT_MOUNT/root-ro" "$ROOT_MOUNT/userdata" || return 1
+	mount -n -o move "$ROOT_RO" "$ROOT_MOUNT/root-ro" || return 1
+	mount -n -o move "$USERDATA_MOUNT" "$ROOT_MOUNT/userdata" || return 1
+}
+
+[ -n "$ROOT_DEVICE" ] || {
+	log "Root device is not defined"
+	exit 1
+}
+
+persistent_ready=0
+if prepare_userdata; then
+	persistent_ready=1
+else
+	log "Persistent userdata is unavailable"
+fi
+
+mount -n -o move "$ROOT_MOUNT" "$ROOT_RO" || {
+	log "Cannot move the read-only rootfs to $ROOT_RO"
+	exit 1
+}
+
+overlay_ready=0
+if [ "$persistent_ready" -eq 1 ]; then
+	if prepare_overlay_storage && try_overlay; then
+		overlay_ready=1
+	else
+		log "Resetting the persistent overlay and retrying"
+		umount "$ROOT_MOUNT" 2>/dev/null || true
+		if reset_overlay_storage && write_rootfs_uuid && try_overlay; then
+			overlay_ready=1
+		fi
+	fi
+fi
+
+if [ "$overlay_ready" -ne 1 ]; then
+	log "Falling back to a temporary overlay"
+	if ! use_temporary_overlay; then
+		log "Temporary overlay setup failed"
+		umount "$ROOT_MOUNT" 2>/dev/null || true
+		umount "$USERDATA_MOUNT" 2>/dev/null || true
+		mount -n -o move "$ROOT_RO" "$ROOT_MOUNT" 2>/dev/null || true
+		exit 1
+	fi
+fi
+
+prepare_merged_root || {
+	log "Cannot expose the lower and userdata mounts in the merged root"
+	exit 1
+}
+
+log "Overlay root is ready"
+exit 0

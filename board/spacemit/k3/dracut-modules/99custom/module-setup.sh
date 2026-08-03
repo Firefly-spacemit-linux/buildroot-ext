@@ -15,7 +15,18 @@ depends() {
 install() {
     inst_multiple -o ps grep more cat rm strace free showmount \
         ping netstat rpcinfo vi scp ping6 ssh \
-        fsck fsck.ext2 fsck.ext4 fsck.ext3 fsck.ext4dev fsck.f2fs fsck.vfat e2fsck resize2fs mount blkid
+        fsck fsck.ext2 fsck.ext4 fsck.ext3 fsck.ext4dev fsck.f2fs fsck.vfat \
+        e2fsck resize2fs mount umount blkid dd head tr sync \
+        mv mkdir sleep run-init
+
+    inst /etc/k3-overlayroot.conf
+    if grep -q '^K3_OVERLAYROOT=1$' \
+        "$dracutsysrootdir/etc/k3-overlayroot.conf"; then
+        # Keep the full e2fsprogs binary under a private name. The dracut
+        # busybox module replaces the standard mke2fs path with an applet.
+        inst_binary /sbin/mke2fs /sbin/k3-mke2fs
+        inst_script /sbin/k3-overlayroot
+    fi
 
     # Copy firmware files to initramfs
     local fw="$dracutsysrootdir/../../../output/esos"
