@@ -9,6 +9,13 @@ fi
 printf 'K3_OVERLAYROOT=%s\n' "$K3_OVERLAYROOT" \
     > "${TARGET_DIR}/etc/k3-overlayroot.conf"
 
+K3_BOOTFS_MODULES=0
+if grep -q '^BR2_TARGET_K3_BOOTFS_MODULES=y$' "${BR2_CONFIG}"; then
+    K3_BOOTFS_MODULES=1
+fi
+printf 'K3_BOOTFS_MODULES=%s\n' "$K3_BOOTFS_MODULES" \
+    > "${TARGET_DIR}/etc/k3-bootfs.conf"
+
 if [ "$K3_OVERLAYROOT" -eq 0 ]; then
     rm -f "${TARGET_DIR}/usr/bin/recovery"
 fi

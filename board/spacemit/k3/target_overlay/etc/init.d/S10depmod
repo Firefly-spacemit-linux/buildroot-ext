@@ -1,11 +1,19 @@
 #!/bin/sh
 
 KERNEL_VERSION=$(uname -r)
+K3_BOOTFS_MODULES=0
+if [ -r /etc/k3-bootfs.conf ]; then
+    . /etc/k3-bootfs.conf
+fi
 
 case "$1" in
     start)
+        if [ "$K3_BOOTFS_MODULES" -eq 1 ]; then
+            echo "Using module dependency files from bootfs for $KERNEL_VERSION"
+            exit 0
+        fi
         echo "Running depmod for $KERNEL_VERSION..."
-        depmod -a $KERNEL_VERSION
+        depmod -a "$KERNEL_VERSION"
         ;;
     stop|restart|reload)
         ;;

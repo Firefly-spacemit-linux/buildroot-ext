@@ -20,6 +20,7 @@ install() {
         mv mkdir sleep run-init
 
     inst /etc/k3-overlayroot.conf
+    inst /etc/k3-bootfs.conf
     if grep -q '^K3_OVERLAYROOT=1$' \
         "$dracutsysrootdir/etc/k3-overlayroot.conf"; then
         # Keep the full e2fsprogs binary under a private name. The dracut

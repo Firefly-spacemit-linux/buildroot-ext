@@ -10,6 +10,23 @@ config BR2_TARGET_K3_ROOTFS_OVERLAY
 	  When disabled, rootfs is the final partition and uses the
 	  remaining block device space.
 
+config BR2_TARGET_K3_BOOTFS_MODULES
+	bool "Install Linux kernel modules in bootfs"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Install Linux kernel modules under /lib/modules in the bootfs
+	  image instead of the target root filesystem. The initramfs mounts
+	  bootfs at /boot and bind mounts /boot/lib/modules/<release> at
+	  /lib/modules/<release> for the running kernel.
+
+config BR2_TARGET_K3_BOOTFS_SIZE
+	int "Bootfs partition size (MiB)"
+	default 256
+	range 1 4096
+	help
+	  Size of the bootfs partition and ext4 image in MiB. Partition
+	  offsets after bootfs are adjusted to match this value.
+
 source "$BR2_EXTERNAL_Bianbu_PATH/package/rtk-hciattach/Config.in"
 source "$BR2_EXTERNAL_Bianbu_PATH/package/mpp/Config.in"
 source "$BR2_EXTERNAL_Bianbu_PATH/package/img-gpu-powervr/Config.in"

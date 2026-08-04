@@ -12,17 +12,53 @@ if [ -r "${BR2_CONFIG:-}" ] && \
     grep -q '^BR2_TARGET_K3_ROOTFS_OVERLAY=y$' "$BR2_CONFIG"; then
     K3_OVERLAYROOT=1
 fi
+K3_BOOTFS_MODULES=0
+if [ -r "${BR2_CONFIG:-}" ] && \
+    grep -q '^BR2_TARGET_K3_BOOTFS_MODULES=y$' "$BR2_CONFIG"; then
+    K3_BOOTFS_MODULES=1
+fi
+K3_BOOTFS_SIZE_MIB=256
+if [ -r "${BR2_CONFIG:-}" ]; then
+    configured_bootfs_size=$(sed -n \
+        's/^BR2_TARGET_K3_BOOTFS_SIZE=//p' "$BR2_CONFIG" | head -n 1)
+    if [ -n "$configured_bootfs_size" ]; then
+        K3_BOOTFS_SIZE_MIB=$configured_bootfs_size
+    fi
+fi
+case "$K3_BOOTFS_SIZE_MIB" in
+    ""|*[!0-9]*|0)
+        echo "Invalid bootfs size in MiB: $K3_BOOTFS_SIZE_MIB" >&2
+        exit 1
+        ;;
+esac
 
 BASE_PARTITIONS_TEMPLATE="$DEVICE_DIR/partition_universal.json"
 OVERLAY_PARTITIONS_TEMPLATE="$DEVICE_DIR/partition_firefly_universal.json"
 if [ "$K3_OVERLAYROOT" -eq 1 ]; then
-    PARTITIONS_TEMPLATE="$OVERLAY_PARTITIONS_TEMPLATE"
+    SOURCE_PARTITIONS_TEMPLATE="$OVERLAY_PARTITIONS_TEMPLATE"
 else
-    PARTITIONS_TEMPLATE="$BASE_PARTITIONS_TEMPLATE"
+    SOURCE_PARTITIONS_TEMPLATE="$BASE_PARTITIONS_TEMPLATE"
 fi
+EFFECTIVE_PARTITIONS_TEMPLATE="$IMGS_DIR/.k3-partitions-template.json"
+PARTITIONS_TEMPLATE="$EFFECTIVE_PARTITIONS_TEMPLATE"
 PARTITIONS_FILE="$PARTITIONS_TEMPLATE"
+BOOTFS_MODULES_ROOT="$IMGS_DIR/bootfs-modules"
 
-echo "Using partition template: $(basename "$PARTITIONS_TEMPLATE")"
+cleanup_prepare_img() {
+    if [ -n "${EXTERNAL_ROOTFS_LINK:-}" ]; then
+        rm -f "$EXTERNAL_ROOTFS_LINK"
+    fi
+    rm -f "$EFFECTIVE_PARTITIONS_TEMPLATE"
+}
+trap cleanup_prepare_img EXIT
+
+"$DEVICE_DIR/gen_partition_layout.sh" \
+    "$SOURCE_PARTITIONS_TEMPLATE" \
+    "$EFFECTIVE_PARTITIONS_TEMPLATE" \
+    "$K3_BOOTFS_SIZE_MIB" \
+    "$IMGS_DIR/../host"
+
+echo "Using partition template: $(basename "$SOURCE_PARTITIONS_TEMPLATE")"
 
 get_partition_image_name() {
     local partition_name=$1 partition_count image_name
@@ -321,14 +357,6 @@ override_rootfs_img() {
     fi
 }
 
-cleanup_external_rootfs_link() {
-    if [ -n "${EXTERNAL_ROOTFS_LINK:-}" ]; then
-        rm -f "$EXTERNAL_ROOTFS_LINK"
-    fi
-}
-
-trap cleanup_external_rootfs_link EXIT
-
 gen_sub_images() {
 
     #env.bin
@@ -492,7 +520,10 @@ gen_sub_images
     "$IMGS_DIR" \
     "$SDK_DIR/bsp-src/linux-6.18" \
     "$2" \
-    "$IMGS_DIR/../host"
+    "$IMGS_DIR/../host" \
+    "$PARTITIONS_TEMPLATE" \
+    "$BOOTFS_MODULES_ROOT" \
+    "$K3_BOOTFS_MODULES"
 
 if [ ! -f "$BOOTFS_IMAGE_FILE" ]; then
     echo "Missing $BOOTFS_IMAGE_FILE; rebuild the Linux package first" >&2

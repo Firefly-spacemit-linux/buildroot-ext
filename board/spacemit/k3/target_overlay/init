@@ -11,6 +11,7 @@ UBI_MTD=
 UBI_DEV=
 UBI_VOL=
 K3_OVERLAYROOT=0
+K3_BOOTFS_MODULES=0
 init=/sbin/init
 
 log()
@@ -90,8 +91,55 @@ load_overlay_config()
 	esac
 }
 
+load_bootfs_config()
+{
+	config=/etc/k3-bootfs.conf
+	if [ -r "$config" ]; then
+		. "$config"
+	fi
+	case "$K3_BOOTFS_MODULES" in
+		0|1)
+			;;
+		*)
+			emergency_shell "Invalid K3_BOOTFS_MODULES value: $K3_BOOTFS_MODULES"
+			;;
+	esac
+}
+
+mount_bootfs()
+{
+	new_root=$1
+	boot_device=$(wait_for_device PARTLABEL=bootfs) || \
+		emergency_shell "Bootfs device was not found: PARTLABEL=bootfs"
+	if [ "$new_root" = "/" ]; then
+		boot_mount=/boot
+		modules_mount=/lib/modules
+	else
+		boot_mount=$new_root/boot
+		modules_mount=$new_root/lib/modules
+	fi
+
+	log "Mounting bootfs read-only from $boot_device"
+	mkdir -p "$boot_mount"
+	mount -t ext4 -o ro,noload "$boot_device" "$boot_mount" || \
+		emergency_shell "Bootfs mount failed"
+
+	if [ "$K3_BOOTFS_MODULES" -eq 1 ]; then
+		kernel_version=$(uname -r)
+		boot_modules=$boot_mount/lib/modules/$kernel_version
+		target_modules=$modules_mount/$kernel_version
+		if [ ! -d "$boot_modules" ]; then
+			emergency_shell "Bootfs kernel modules are missing: $boot_modules"
+		fi
+		mkdir -p "$target_modules"
+		mount -n -o bind "$boot_modules" "$target_modules" || \
+			emergency_shell "Cannot bind mount bootfs kernel modules"
+	fi
+}
+
 finish_boot()
 {
+	mount_bootfs /rootfs
 	validate_root_init /rootfs || emergency_shell "Rootfs init validation failed: $init"
 
 	mkdir -p /rootfs/proc /rootfs/sys /rootfs/run /rootfs/dev
@@ -114,6 +162,7 @@ mount -t devpts -o defaults,mode=644,ptmxmode=666 devpts /dev/pts
 mount -t tmpfs tmpfs /dev/shm
 mount -t tmpfs -o mode=0755,nosuid,nodev,size=10% tmpfs /run
 load_overlay_config
+load_bootfs_config
 
 for argument in $(cat /proc/cmdline); do
 	case "$argument" in
@@ -143,6 +192,7 @@ for argument in $(cat /proc/cmdline); do
 done
 
 if [ -z "$ROOT_SPEC" ]; then
+	mount_bootfs /
 	exec /sbin/init
 fi
 

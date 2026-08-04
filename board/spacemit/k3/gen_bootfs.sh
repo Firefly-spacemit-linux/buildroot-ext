@@ -9,7 +9,9 @@ KERNEL_IMAGE_NAME=$3
 HOST_DIR=$4
 DEVICE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-PARTITIONS_FILE="$DEVICE_DIR/partition_universal.json"
+PARTITIONS_FILE=${5:-"$DEVICE_DIR/partition_universal.json"}
+BOOTFS_MODULES_ROOT=${6:-}
+INSTALL_BOOTFS_MODULES=${7:-0}
 UENV_FILE="$DEVICE_DIR/env_k3.txt"
 LOGO_FILE="$DEVICE_DIR/firefly.bmp"
 BOOTFS_DIR="$IMAGES_DIR/bootfs"
@@ -37,6 +39,20 @@ for file in "$PARTITIONS_FILE" "$UENV_FILE" "$LOGO_FILE" "$KERNEL_IMAGE"; do
 		exit 1
 	fi
 done
+
+case "$INSTALL_BOOTFS_MODULES" in
+	0|1)
+		;;
+	*)
+		echo "Invalid bootfs modules setting: $INSTALL_BOOTFS_MODULES" >&2
+		exit 1
+		;;
+esac
+if [ "$INSTALL_BOOTFS_MODULES" -eq 1 ] && \
+	[ ! -d "$BOOTFS_MODULES_ROOT/lib/modules" ]; then
+	echo "Missing bootfs kernel modules: $BOOTFS_MODULES_ROOT/lib/modules" >&2
+	exit 1
+fi
 
 FIRST_DTB=$(find "$IMAGES_DIR" -maxdepth 1 -type f -name '*.dtb' -print -quit)
 if [ -z "$FIRST_DTB" ]; then
@@ -95,8 +111,6 @@ echo "Generating $BOOTFS_IMAGE_NAME after Linux image installation"
 rm -rf "$BOOTFS_DIR"
 mkdir -p "$BOOTFS_DIR"
 rm -f "$BOOTFS_IMAGE"
-dd if=/dev/zero of="$BOOTFS_IMAGE" count=1 bs="$BOOTFS_SIZE"
-"$HOST_DIR/sbin/mkfs.vfat" -S 4096 "$BOOTFS_IMAGE"
 
 cp -f "$UENV_FILE" "$LOGO_FILE" "$KERNEL_IMAGE" "$BOOTFS_DIR/"
 find "$IMAGES_DIR" -maxdepth 1 -type f -name '*.dtb' \
@@ -109,6 +123,25 @@ else
 	echo "Ramdisk '$RAMDISK_NAME' not found under $LINUX_SOURCE_DIR; skipping it"
 fi
 
-"$HOST_DIR/bin/mcopy" -i "$BOOTFS_IMAGE" "$BOOTFS_DIR"/* ::
-"$HOST_DIR/sbin/fsck.vfat" -v -n "$BOOTFS_IMAGE"
+if [ "$INSTALL_BOOTFS_MODULES" -eq 1 ]; then
+	echo "Installing kernel modules from $BOOTFS_MODULES_ROOT"
+	mkdir -p "$BOOTFS_DIR/lib/modules"
+	modules_count=0
+	for modules_dir in "$BOOTFS_MODULES_ROOT"/lib/modules/*; do
+		if [ ! -d "$modules_dir" ]; then
+			continue
+		fi
+		cp -a "$modules_dir" "$BOOTFS_DIR/lib/modules/"
+		modules_count=$((modules_count + 1))
+	done
+	if [ "$modules_count" -ne 1 ]; then
+		echo "Expected exactly one kernel module version directory in $BOOTFS_MODULES_ROOT" >&2
+		exit 1
+	fi
+fi
+
+truncate -s "$BOOTFS_SIZE" "$BOOTFS_IMAGE"
+"$HOST_DIR/sbin/mkfs.ext4" -F -b 4096 -L bootfs \
+	-d "$BOOTFS_DIR" "$BOOTFS_IMAGE"
+"$HOST_DIR/sbin/e2fsck" -f -n "$BOOTFS_IMAGE"
 echo "Generated $BOOTFS_IMAGE"
