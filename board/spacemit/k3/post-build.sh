@@ -16,6 +16,14 @@ fi
 printf 'K3_BOOTFS_MODULES=%s\n' "$K3_BOOTFS_MODULES" \
     > "${TARGET_DIR}/etc/k3-bootfs.conf"
 
+K3_SD_CARD_UPGRADE_POST_INSTALL=0
+if grep -q '^BR2_TARGET_K3_SD_CARD_UPGRADE_POST_INSTALL=y$' "${BR2_CONFIG}"; then
+    K3_SD_CARD_UPGRADE_POST_INSTALL=1
+fi
+printf 'K3_SD_CARD_UPGRADE_POST_INSTALL=%s\n' \
+    "$K3_SD_CARD_UPGRADE_POST_INSTALL" \
+    > "${TARGET_DIR}/etc/k3-sd-post-install.conf"
+
 if [ "$K3_OVERLAYROOT" -eq 0 ]; then
     rm -f "${TARGET_DIR}/usr/bin/recovery"
 fi

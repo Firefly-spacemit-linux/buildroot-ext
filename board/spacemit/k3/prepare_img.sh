@@ -17,6 +17,12 @@ if [ -r "${BR2_CONFIG:-}" ] && \
     grep -q '^BR2_TARGET_K3_BOOTFS_MODULES=y$' "$BR2_CONFIG"; then
     K3_BOOTFS_MODULES=1
 fi
+K3_SD_CARD_UPGRADE_POST_INSTALL=0
+K3_SD_CARD_UPGRADE_PAYLOAD_INCLUDED=0
+if [ -r "${BR2_CONFIG:-}" ] && \
+    grep -q '^BR2_TARGET_K3_SD_CARD_UPGRADE_POST_INSTALL=y$' "$BR2_CONFIG"; then
+    K3_SD_CARD_UPGRADE_POST_INSTALL=1
+fi
 K3_BOOTFS_SIZE_MIB=256
 if [ -r "${BR2_CONFIG:-}" ]; then
     configured_bootfs_size=$(sed -n \
@@ -451,6 +457,76 @@ gen_sdcard_img() {
     echo "Successfully generated at ${IMGS_DIR}/${SDCARD_IMAGE}"
 }
 
+add_sd_post_install_payload() {
+    local payload_dir payload_file first_line
+    local -a payload_files missing_files
+
+    [ "$K3_SD_CARD_UPGRADE_POST_INSTALL" -eq 1 ] || return 0
+
+    payload_dir=${K3_SD_CARD_UPGRADE_PAYLOAD_DIR:-$SDK_DIR/sd-card-upgrade-payload}
+    payload_files=(firefly-test.sh rc.local linuxqa.tar.gz)
+    for payload_file in "${payload_files[@]}"; do
+        if [ ! -r "$payload_dir/$payload_file" ]; then
+            missing_files+=("$payload_file")
+        fi
+    done
+    if [ "${#missing_files[@]}" -ne 0 ]; then
+#        echo "SD post-install payload is incomplete; omitting it from the upgrade image"
+#        for payload_file in "${missing_files[@]}"; do
+#            echo "Missing optional payload file: $payload_dir/$payload_file"
+#        done
+        return 0
+    fi
+
+    for payload_file in firefly-test.sh rc.local; do
+        first_line=$(head -n 1 "$payload_dir/$payload_file")
+        case "$first_line" in
+            '#!'*) ;;
+            *)
+                echo "Missing shebang in SD post-install payload: $payload_file" >&2
+                return 1
+                ;;
+        esac
+        if LC_ALL=C grep -q $'\r' "$payload_dir/$payload_file"; then
+            echo "CRLF is not allowed in SD post-install payload: $payload_file" >&2
+            return 1
+        fi
+    done
+
+    gzip -t "$payload_dir/linuxqa.tar.gz"
+    tar -tzf "$payload_dir/linuxqa.tar.gz" >/dev/null
+    cp -f "$payload_dir/firefly-test.sh" \
+        "$payload_dir/rc.local" \
+        "$payload_dir/linuxqa.tar.gz" \
+        "$IMGS_DIR/"
+    K3_SD_CARD_UPGRADE_PAYLOAD_INCLUDED=1
+    echo "Added the SD card post-install payload from $payload_dir"
+}
+
+update_flash_payload_list() {
+    local flash_file flash_file_tmp
+
+    flash_file="$IMGS_DIR/partition_flash.json"
+    flash_file_tmp="${flash_file}.tmp"
+    if [ ! -f "$flash_file" ]; then
+        echo "Missing flash partition file: $flash_file" >&2
+        return 1
+    fi
+
+    "$IMGS_DIR/../host/bin/jq" \
+        --arg include_misc "$K3_OVERLAYROOT" \
+        --arg misc_image "$MISC_IMAGE_NAME" \
+        '
+        def append_if_missing($item):
+            if index($item) then . else . + [$item] end;
+        (.partitions[] | select(.name == "bootfs") | .image) |=
+            (if $include_misc == "1" then
+                append_if_missing($misc_image)
+             else . end)
+        ' "$flash_file" > "$flash_file_tmp"
+    mv "$flash_file_tmp" "$flash_file"
+}
+
 pack_image_zip() {
     local partition_file partition_name
     local -a image_files
@@ -458,10 +534,14 @@ pack_image_zip() {
     echo "Starting to pack images................................."
     rm -f ${TARGET_IMAGE_ZIP}
     rm -rf ${IMGS_DIR}/factory
+    rm -f "$IMGS_DIR/firefly-test.sh" \
+        "$IMGS_DIR/rc.local" \
+        "$IMGS_DIR/linuxqa.tar.gz"
 
     mkdir -p ${IMGS_DIR}/factory
     cp -f ${IMGS_DIR}/FSBL.bin ${IMGS_DIR}/factory/
     cp -f ${IMGS_DIR}/bootinfo_*.bin ${IMGS_DIR}/factory/
+    add_sd_post_install_payload
     cp -f ${DEVICE_DIR}/fastboot.yaml ${IMGS_DIR}/
     cp -f ${DEVICE_DIR}/ec.bin ${IMGS_DIR}/
     rm -f "$IMGS_DIR/partition_firefly_universal.json"
@@ -474,6 +554,7 @@ pack_image_zip() {
         esac
         cp -f "$partition_file" "$IMGS_DIR/"
     done
+    update_flash_payload_list
 
     image_files=(
         fw_dynamic.itb
@@ -486,6 +567,9 @@ pack_image_zip() {
     )
     if [ "$K3_OVERLAYROOT" -eq 1 ]; then
         image_files+=("$MISC_IMAGE_NAME")
+    fi
+    if [ "$K3_SD_CARD_UPGRADE_PAYLOAD_INCLUDED" -eq 1 ]; then
+        image_files+=(firefly-test.sh rc.local linuxqa.tar.gz)
     fi
 
     cd ${IMGS_DIR}

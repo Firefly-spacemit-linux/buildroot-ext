@@ -1,0 +1,629 @@
+#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+CONFIG_FILE=/etc/k3-sd-post-install.conf
+IMPORT_IDLE="K3_SD_IMPORT_IDLE_V1"
+IMPORT_PENDING="K3_SD_IMPORT_PENDING_V1"
+IMPORT_IN_PROGRESS="K3_SD_IMPORT_IN_PROGRESS_V1"
+IMPORT_DONE="K3_SD_IMPORT_DONE_WAIT_REMOVE_V1"
+IMPORT_FAILED="K3_SD_IMPORT_FAILED_V1"
+SD_MOUNT=/run/k3-sd-upgrade
+PAYLOAD_DIR=$SD_MOUNT
+STAGING=/rootfs/var/cache/.firefly-import.new
+ROLLBACK=/rootfs/var/cache/.firefly-import.old
+DEST=/rootfs/var/cache/firefly
+SCRIPT_NEW=/rootfs/usr/local/bin/.firefly-test.sh.new
+RC_LOCAL_NEW=/rootfs/etc/.rc.local.new
+TAR=/sbin/k3-tar
+MAX_ENTRY_BYTES=8589934592
+OUTER_NAMES=/run/k3-sd-outer.names
+OUTER_VERBOSE=/run/k3-sd-outer.verbose
+INNER_NAMES=/run/k3-sd-inner.names
+INNER_VERBOSE=/run/k3-sd-inner.verbose
+POWER_LED=
+POWER_MAX=
+USER_LED=
+USER_MAX=
+LED_PID=
+SD_DEV=
+SD_CARD_DEV=
+SD_CARD_SYS=
+SD_MOUNTED=0
+SD_PAYLOAD_MISSING=0
+USERDATA_VALID=0
+
+log()
+{
+	echo "k3-sd-post-install: $*"
+}
+
+read_state()
+{
+	dd if="$MISC_DEV" bs=64 count=1 2>/dev/null | tr -d '\000\r\n'
+}
+
+write_state()
+{
+	state=$1
+	printf '%s\n' "$state" | \
+		dd of="$MISC_DEV" bs=4096 count=1 conv=sync 2>/dev/null || return 1
+	sync
+}
+
+disable_power_led()
+{
+	POWER_LED=
+	POWER_MAX=
+}
+
+disable_user_led()
+{
+	USER_LED=
+	USER_MAX=
+}
+
+prepare_power_led()
+{
+	led=/sys/class/leds/:power
+	[ -d "$led" ] || return 0
+	[ -w "$led/trigger" ] && [ -w "$led/brightness" ] && \
+		[ -r "$led/max_brightness" ] || {
+		log "Warning: power LED controls are unavailable"
+		return 0
+	}
+	max=$(head -n 1 "$led/max_brightness" 2>/dev/null)
+	case "$max" in
+		''|*[!0-9]*|0)
+			log "Warning: power LED maximum brightness is invalid"
+			return 0
+			;;
+	esac
+	printf '%s\n' none > "$led/trigger" 2>/dev/null || {
+		log "Warning: cannot disable the power LED trigger"
+		return 0
+	}
+	POWER_LED=$led
+	POWER_MAX=$max
+}
+
+prepare_user_led()
+{
+	led=/sys/class/leds/:user
+	[ -d "$led" ] || return 0
+	[ -w "$led/trigger" ] && [ -w "$led/brightness" ] && \
+		[ -r "$led/max_brightness" ] || {
+		log "Warning: user LED controls are unavailable"
+		return 0
+	}
+	max=$(head -n 1 "$led/max_brightness" 2>/dev/null)
+	case "$max" in
+		''|*[!0-9]*|0)
+			log "Warning: user LED maximum brightness is invalid"
+			return 0
+			;;
+	esac
+	printf '%s\n' none > "$led/trigger" 2>/dev/null || {
+		log "Warning: cannot disable the user LED trigger"
+		return 0
+	}
+	USER_LED=$led
+	USER_MAX=$max
+}
+
+power_set()
+{
+	[ -n "$POWER_LED" ] || return 0
+	value=0
+	[ "$1" -eq 1 ] && value=$POWER_MAX
+	printf '%s\n' "$value" > "$POWER_LED/brightness" 2>/dev/null || {
+		log "Warning: power LED control failed"
+		disable_power_led
+	}
+}
+
+user_set()
+{
+	[ -n "$USER_LED" ] || return 0
+	value=0
+	[ "$1" -eq 1 ] && value=$USER_MAX
+	printf '%s\n' "$value" > "$USER_LED/brightness" 2>/dev/null || {
+		log "Warning: user LED control failed"
+		disable_user_led
+	}
+}
+
+stop_led_blink()
+{
+	[ -n "$LED_PID" ] || return 0
+	kill "$LED_PID" 2>/dev/null || true
+	wait "$LED_PID" 2>/dev/null || true
+	LED_PID=
+}
+
+led_idle()
+{
+	stop_led_blink
+	power_set 0
+	user_set 1
+}
+
+start_write_blink()
+{
+	stop_led_blink
+	(
+		phase=1
+		while :; do
+			if [ "$phase" -eq 1 ]; then
+				power_set 1
+				user_set 0
+				phase=0
+			else
+				power_set 0
+				user_set 1
+				phase=1
+			fi
+			sleep 0.25
+		done
+	) &
+	LED_PID=$!
+}
+
+start_complete_blink()
+{
+	stop_led_blink
+	power_set 0
+	(
+		phase=1
+		while :; do
+			user_set "$phase"
+			if [ "$phase" -eq 1 ]; then
+				phase=0
+			else
+				phase=1
+			fi
+			sleep 0.5
+		done
+	) &
+	LED_PID=$!
+}
+
+cleanup_runtime_files()
+{
+	rm -f "$OUTER_NAMES" "$OUTER_VERBOSE" \
+		"$INNER_NAMES" "$INNER_VERBOSE"
+}
+
+cleanup_staging()
+{
+	rm -rf "$STAGING"
+	rm -f "$SCRIPT_NEW" "$RC_LOCAL_NEW"
+}
+
+recover_stale_install()
+{
+	[ -d "$ROLLBACK" ] || return 0
+	if [ -f "$ROLLBACK/prepared" ]; then
+		restore_install || return 1
+	fi
+	rm -rf "$ROLLBACK" || return 1
+}
+
+fail()
+{
+	log "$*"
+	if [ "$USERDATA_VALID" -eq 1 ]; then
+		start_write_blink
+		cleanup_staging
+		sync 2>/dev/null || true
+	fi
+	stop_led_blink
+	if [ "$SD_MOUNTED" -eq 1 ]; then
+		umount "$SD_MOUNT" 2>/dev/null || true
+		SD_MOUNTED=0
+	fi
+	write_state "$IMPORT_FAILED" || \
+		log "Warning: cannot record the failed import state"
+	led_idle
+	cleanup_runtime_files
+	return 1
+}
+
+find_upgrade_partition()
+{
+	mkdir -p "$SD_MOUNT" || return 1
+	for sysdev in /sys/class/block/mmcblk*p*; do
+		[ -e "$sysdev" ] || continue
+		[ -f "$sysdev/partition" ] || continue
+		resolved=$(readlink -f "$sysdev" 2>/dev/null) || continue
+		parent=${resolved%/*}
+		card=${parent##*/}
+		card_sys=/sys/class/block/$card
+		card_type=$(head -n 1 "$card_sys/device/type" 2>/dev/null)
+		case "$card_type" in
+			SD|SDcombo)
+				;;
+			*)
+				continue
+				;;
+		esac
+		candidate=/dev/${sysdev##*/}
+		[ -b "$candidate" ] || continue
+		[ "$candidate" = "${USERDATA_DEV:-}" ] && continue
+		[ "$candidate" = "$MISC_DEV" ] && continue
+
+		if mount -o ro "$candidate" "$SD_MOUNT" 2>/dev/null; then
+			SD_MOUNTED=1
+			if [ -r "$SD_MOUNT/partition_universal.json" ] && \
+			   [ -r "$PAYLOAD_DIR/firefly-test.sh" ] && \
+			   [ -r "$PAYLOAD_DIR/rc.local" ] && \
+			   [ -r "$PAYLOAD_DIR/linuxqa.tar.gz" ]; then
+				SD_DEV=$candidate
+				SD_CARD_DEV=/dev/$card
+				SD_CARD_SYS=$card_sys
+				return 0
+			fi
+			log "Ignoring $candidate: required upgrade files are missing"
+			SD_PAYLOAD_MISSING=1
+			umount "$SD_MOUNT" 2>/dev/null || return 1
+			SD_MOUNTED=0
+		else
+			log "Warning: cannot mount SD candidate $candidate read-only"
+		fi
+	done
+	return 1
+}
+
+path_is_safe()
+{
+	path=$1
+	case "$path" in
+		/*) return 1 ;;
+	esac
+	path=${path#./}
+	case "/$path/" in
+		*/../*) return 1 ;;
+	esac
+	[ "${#path}" -le 4096 ] || return 1
+	return 0
+}
+
+archive_names_are_safe()
+{
+	listing=$1
+	while IFS= read -r path; do
+		path_is_safe "$path" || return 1
+	done < "$listing"
+}
+
+archive_links_are_safe()
+{
+	verbose=$1
+	sed -n 's/^l.* -> //p; s/^h.* link to //p' "$verbose" | \
+	while IFS= read -r target; do
+		path_is_safe "$target" || exit 1
+	done
+}
+
+archive_layout_is_safe()
+{
+	names=$1
+	verbose=$2
+	archive_names_are_safe "$names" || return 1
+	archive_links_are_safe "$verbose" || return 1
+	if grep -Eq '^[^dhl-]' "$verbose"; then
+		return 1
+	fi
+	awk -v max="$MAX_ENTRY_BYTES" '
+		substr($1, 1, 1) == "-" && $3 > max { bad = 1 }
+		END { exit bad }
+	' "$verbose"
+}
+
+find_outer_member()
+{
+	wanted=$1
+	listing=$2
+	found=
+	while IFS= read -r member; do
+		normalized=${member#./}
+		if [ "$normalized" = "$wanted" ]; then
+			[ -z "$found" ] || return 1
+			found=$member
+		fi
+	done < "$listing"
+	[ -n "$found" ] || return 1
+	printf '%s\n' "$found"
+}
+
+validate_script()
+{
+	script=$1
+	first=$(head -n 1 "$script" 2>/dev/null)
+	case "$first" in
+		'#!'*) ;;
+		*) return 1 ;;
+	esac
+	cr=$(printf '\r')
+	if LC_ALL=C grep -q "$cr" "$script"; then
+		return 1
+	fi
+	return 0
+}
+
+validate_archives()
+{
+	archive=$PAYLOAD_DIR/linuxqa.tar.gz
+	gzip -t "$archive" 2>/dev/null || return 1
+	"$TAR" -tzf "$archive" > "$OUTER_NAMES" 2>/dev/null || return 1
+	"$TAR" -tvzf "$archive" > "$OUTER_VERBOSE" 2>/dev/null || return 1
+	archive_layout_is_safe "$OUTER_NAMES" "$OUTER_VERBOSE" || return 1
+	START_MEMBER=$(find_outer_member start.sh "$OUTER_NAMES") || return 1
+	PROJ_MEMBER=$(find_outer_member proj.tar.gz "$OUTER_NAMES") || return 1
+
+	"$TAR" -xOzf "$archive" "$PROJ_MEMBER" 2>/dev/null | \
+		gzip -t 2>/dev/null || return 1
+	"$TAR" -xOzf "$archive" "$PROJ_MEMBER" 2>/dev/null | \
+		"$TAR" -tzf - > "$INNER_NAMES" 2>/dev/null || return 1
+	"$TAR" -xOzf "$archive" "$PROJ_MEMBER" 2>/dev/null | \
+		"$TAR" -tvzf - > "$INNER_VERBOSE" 2>/dev/null || return 1
+	archive_layout_is_safe "$INNER_NAMES" "$INNER_VERBOSE" || return 1
+	if ! grep -Eq '^\.?/?proj(/|$)' "$INNER_NAMES"; then
+		return 1
+	fi
+	return 0
+}
+
+restore_install()
+{
+	if [ -f "$ROLLBACK/had-firefly" ]; then
+		if [ ! -d "$ROLLBACK/firefly" ]; then
+			[ -e "$DEST" ] || [ -L "$DEST" ] || return 1
+		else
+			rm -rf "$DEST" || return 1
+			mv "$ROLLBACK/firefly" "$DEST" || return 1
+		fi
+	elif [ -f "$ROLLBACK/no-firefly" ]; then
+		rm -rf "$DEST"
+	else
+		return 1
+	fi
+	if [ -f "$ROLLBACK/firefly-test.sh" ]; then
+		cp -p "$ROLLBACK/firefly-test.sh" \
+			/rootfs/usr/local/bin/firefly-test.sh || return 1
+	elif [ -f "$ROLLBACK/no-firefly-test" ]; then
+		rm -f /rootfs/usr/local/bin/firefly-test.sh || return 1
+	else
+		return 1
+	fi
+	if [ -f "$ROLLBACK/rc.local" ]; then
+		cp -p "$ROLLBACK/rc.local" /rootfs/etc/rc.local || return 1
+	elif [ -f "$ROLLBACK/no-rc-local" ]; then
+		rm -f /rootfs/etc/rc.local || return 1
+	else
+		return 1
+	fi
+	return 0
+}
+
+install_staged_files()
+{
+	mkdir -p "$ROLLBACK" || return 1
+	if [ -e /rootfs/usr/local/bin/firefly-test.sh ] || \
+	   [ -L /rootfs/usr/local/bin/firefly-test.sh ]; then
+		cp -p /rootfs/usr/local/bin/firefly-test.sh \
+			"$ROLLBACK/firefly-test.sh" || return 1
+	else
+		: > "$ROLLBACK/no-firefly-test" || return 1
+	fi
+	if [ -e /rootfs/etc/rc.local ] || [ -L /rootfs/etc/rc.local ]; then
+		cp -p /rootfs/etc/rc.local "$ROLLBACK/rc.local" || return 1
+	else
+		: > "$ROLLBACK/no-rc-local" || return 1
+	fi
+	if [ -e "$DEST" ] || [ -L "$DEST" ]; then
+		: > "$ROLLBACK/had-firefly" || return 1
+	else
+		: > "$ROLLBACK/no-firefly" || return 1
+	fi
+	: > "$ROLLBACK/prepared" || return 1
+	sync || return 1
+
+	if [ -f "$ROLLBACK/had-firefly" ]; then
+		mv "$DEST" "$ROLLBACK/firefly" || return 1
+	fi
+
+	if ! mv "$STAGING" "$DEST" || \
+	   ! mv "$SCRIPT_NEW" /rootfs/usr/local/bin/firefly-test.sh || \
+	   ! mv "$RC_LOCAL_NEW" /rootfs/etc/rc.local; then
+		restore_install || return 1
+		rm -rf "$ROLLBACK"
+		return 1
+	fi
+	rm -rf "$ROLLBACK"
+	return 0
+}
+
+K3_SD_CARD_UPGRADE_POST_INSTALL=0
+if [ -r "$CONFIG_FILE" ]; then
+	. "$CONFIG_FILE"
+fi
+[ "$K3_SD_CARD_UPGRADE_POST_INSTALL" = 1 ] || exit 0
+
+if [ -z "${MISC_DEV:-}" ] || [ ! -b "$MISC_DEV" ]; then
+	MISC_DEV=$(blkid -t PARTLABEL=misc -o device 2>/dev/null | head -n 1)
+fi
+[ -n "$MISC_DEV" ] && [ -b "$MISC_DEV" ] || exit 0
+
+state=$(read_state 2>/dev/null || true)
+case "$state" in
+	"$IMPORT_PENDING"|"$IMPORT_IN_PROGRESS")
+		;;
+	*)
+		exit 0
+		;;
+esac
+
+trap 'stop_led_blink' EXIT INT TERM
+prepare_power_led
+prepare_user_led
+led_idle
+
+if ! find_upgrade_partition; then
+	if [ "$SD_PAYLOAD_MISSING" -eq 1 ]; then
+		log "No complete SD post-install payload; continuing normal boot"
+		if [ "$SD_MOUNTED" -eq 1 ]; then
+			umount "$SD_MOUNT" 2>/dev/null || \
+				log "Warning: cannot unmount the incomplete SD payload"
+			SD_MOUNTED=0
+		fi
+		write_state "$IMPORT_IDLE" || \
+			log "Warning: cannot clear the skipped import state"
+		led_idle
+		cleanup_runtime_files
+		exit 0
+	fi
+	fail "Cannot find the SD upgrade payload"
+	exit 1
+fi
+log "Checking the post-install payload on $SD_DEV"
+
+if [ "${USERDATA_PERSISTENT:-0}" != 1 ] || \
+   [ -z "${USERDATA_DEV:-}" ] || [ ! -b "$USERDATA_DEV" ] || \
+   ! awk '$2 == "/rootfs/userdata" && $3 == "ext4" { found = 1 } END { exit !found }' \
+	/proc/mounts; then
+	fail "Persistent ext4 userdata is required"
+	exit 1
+fi
+USERDATA_VALID=1
+
+write_state "$IMPORT_IN_PROGRESS" || {
+	fail "Cannot record the in-progress import state"
+	exit 1
+}
+
+start_write_blink
+recover_stale_install || {
+	fail "Cannot recover an interrupted post-install transaction"
+	exit 1
+}
+cleanup_staging
+mkdir -p /rootfs/usr/local/bin /rootfs/etc /rootfs/var/cache || {
+	fail "Cannot create the target directories"
+	exit 1
+}
+sync || {
+	fail "Cannot synchronize post-install recovery data"
+	exit 1
+}
+led_idle
+
+validate_script "$PAYLOAD_DIR/firefly-test.sh" || {
+	fail "firefly-test.sh is missing a valid shebang or contains CRLF"
+	exit 1
+}
+validate_script "$PAYLOAD_DIR/rc.local" || {
+	fail "rc.local is missing a valid shebang or contains CRLF"
+	exit 1
+}
+validate_archives || {
+	fail "linuxqa.tar.gz or proj.tar.gz is invalid or unsafe"
+	exit 1
+}
+
+start_write_blink
+mkdir -p "$STAGING" || {
+	fail "Cannot create the staging directory"
+	exit 1
+}
+cp "$PAYLOAD_DIR/linuxqa.tar.gz" "$STAGING/linuxqa.tar.gz" || {
+	fail "Cannot stage linuxqa.tar.gz"
+	exit 1
+}
+"$TAR" --no-same-owner --no-same-permissions -xzf \
+	"$STAGING/linuxqa.tar.gz" -C "$STAGING" || {
+	fail "Cannot extract linuxqa.tar.gz"
+	exit 1
+}
+[ -f "$STAGING/start.sh" ] && [ -f "$STAGING/proj.tar.gz" ] || {
+	fail "linuxqa.tar.gz does not contain start.sh and proj.tar.gz"
+	exit 1
+}
+gzip -t "$STAGING/proj.tar.gz" 2>/dev/null || {
+	fail "The staged proj.tar.gz is corrupt"
+	exit 1
+}
+"$TAR" --no-same-owner --no-same-permissions -xzf \
+	"$STAGING/proj.tar.gz" -C "$STAGING" || {
+	fail "Cannot extract proj.tar.gz"
+	exit 1
+}
+[ -d "$STAGING/proj" ] || {
+	fail "proj.tar.gz does not contain the proj directory"
+	exit 1
+}
+
+cp "$PAYLOAD_DIR/firefly-test.sh" "$SCRIPT_NEW" || {
+	fail "Cannot stage firefly-test.sh"
+	exit 1
+}
+cp "$PAYLOAD_DIR/rc.local" "$RC_LOCAL_NEW" || {
+	fail "Cannot stage rc.local"
+	exit 1
+}
+chmod 0755 "$SCRIPT_NEW" "$RC_LOCAL_NEW" || {
+	fail "Cannot set script permissions"
+	exit 1
+}
+chmod 0644 "$STAGING/linuxqa.tar.gz" || {
+	fail "Cannot set linuxqa.tar.gz permissions"
+	exit 1
+}
+chown 0:0 "$SCRIPT_NEW" "$RC_LOCAL_NEW" \
+	"$STAGING/linuxqa.tar.gz" || {
+	fail "Cannot set payload ownership"
+	exit 1
+}
+
+install_staged_files || {
+	fail "Cannot atomically install the post-install payload"
+	exit 1
+}
+sync || {
+	fail "Cannot synchronize the imported data"
+	exit 1
+}
+led_idle
+
+umount "$SD_MOUNT" || {
+	fail "Cannot unmount the SD upgrade partition"
+	exit 1
+}
+SD_MOUNTED=0
+write_state "$IMPORT_DONE" || {
+	fail "Cannot record the completed import state"
+	exit 1
+}
+
+cleanup_runtime_files
+start_complete_blink
+log "Upgrade complete. Remove the SD card."
+
+while [ -e "$SD_CARD_SYS" ] || [ -b "$SD_CARD_DEV" ]; do
+	sleep 0.5
+done
+
+stop_led_blink
+power_set 0
+user_set 0
+write_state "$IMPORT_IDLE" || {
+	log "Cannot clear the SD import state"
+	exit 1
+}
+sync
+log "SD card removed; rebooting"
+reboot -f
+while :; do
+	sleep 1
+done

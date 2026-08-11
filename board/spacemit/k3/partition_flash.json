@@ -62,7 +62,10 @@
                 "esos.itb",
                 "bootfs.img",
 		"rootfs.ext4",
-                "/partition_.+.json$/"]
+                "/partition_.+.json$/",
+                "/firefly-test.sh$/",
+                "/rc.local$/",
+                "/linuxqa.tar.gz$/"]
     }
   ]
 }

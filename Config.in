@@ -10,6 +10,16 @@ config BR2_TARGET_K3_ROOTFS_OVERLAY
 	  When disabled, rootfs is the final partition and uses the
 	  remaining block device space.
 
+config BR2_TARGET_K3_SD_CARD_UPGRADE_POST_INSTALL
+	bool "Enable SD card upgrade post-install"
+	depends on BR2_TARGET_K3_ROOTFS_OVERLAY
+	depends on BR2_TARGET_ROOTFS_CPIO_DRACUT
+	help
+	  After U-Boot successfully upgrades firmware from a validated SD
+	  card, boot the newly flashed target and import the factory test
+	  payload into the persistent rootfs overlay. The device waits for
+	  SD card removal and then reboots automatically.
+
 config BR2_TARGET_K3_BOOTFS_MODULES
 	bool "Install Linux kernel modules in bootfs"
 	depends on BR2_LINUX_KERNEL

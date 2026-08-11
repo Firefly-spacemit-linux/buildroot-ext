@@ -1,5 +1,10 @@
 include $(sort $(wildcard $(BR2_EXTERNAL_Bianbu_PATH)/package/*/*.mk))
 
+ifeq ($(BR2_TARGET_K3_SD_CARD_UPGRADE_POST_INSTALL),y)
+UBOOT_KCONFIG_FRAGMENT_FILES += \
+	$(BR2_EXTERNAL_Bianbu_PATH)/board/spacemit/k3/uboot-sd-card-upgrade-post-install.config
+endif
+
 # K3 Linux 6.18 BSP development commonly rebuilds only the Linux package.
 # Generate the boot filesystem image during image installation so
 # linux-rebuild immediately produces an image that can be flashed for debugging.

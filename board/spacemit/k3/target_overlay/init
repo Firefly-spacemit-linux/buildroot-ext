@@ -6,12 +6,14 @@ export PATH
 ROOT_SPEC=
 ROOT=
 ROOTFSTYPE=ext4
+BOOTFS_SPEC=PARTLABEL=bootfs
 NFSROOT=
 UBI_MTD=
 UBI_DEV=
 UBI_VOL=
 K3_OVERLAYROOT=0
 K3_BOOTFS_MODULES=0
+K3_SD_CARD_UPGRADE_POST_INSTALL=0
 init=/sbin/init
 
 log()
@@ -23,7 +25,28 @@ emergency_shell()
 {
 	log "$*"
 	log "Starting an emergency shell"
-	exec sh
+	if [ -x /bin/bash ]; then
+		shell=/bin/bash
+		set -- --noprofile --norc -i
+		PS1='k3-initramfs:\w# '
+		export PS1
+	else
+		log "Warning: bash is unavailable; falling back to /bin/sh"
+		shell=/bin/sh
+		set -- -i
+	fi
+
+	if command -v setsid >/dev/null 2>&1 && [ -c /dev/console ]; then
+		while :; do
+			setsid -c "$shell" "$@" \
+				</dev/console >/dev/console 2>&1
+			log "Emergency shell exited; restarting"
+			sleep 1
+		done
+	fi
+
+	log "Warning: cannot attach the emergency shell to /dev/console"
+	exec "$shell" "$@"
 }
 
 resolve_device()
@@ -106,11 +129,26 @@ load_bootfs_config()
 	esac
 }
 
+load_sd_post_install_config()
+{
+	config=/etc/k3-sd-post-install.conf
+	if [ -r "$config" ]; then
+		. "$config"
+	fi
+	case "$K3_SD_CARD_UPGRADE_POST_INSTALL" in
+		0|1)
+			;;
+		*)
+			emergency_shell "Invalid K3_SD_CARD_UPGRADE_POST_INSTALL value: $K3_SD_CARD_UPGRADE_POST_INSTALL"
+			;;
+	esac
+}
+
 mount_bootfs()
 {
 	new_root=$1
-	boot_device=$(wait_for_device PARTLABEL=bootfs) || \
-		emergency_shell "Bootfs device was not found: PARTLABEL=bootfs"
+	boot_device=$(wait_for_device "$BOOTFS_SPEC") || \
+		emergency_shell "Bootfs device was not found: $BOOTFS_SPEC"
 	if [ "$new_root" = "/" ]; then
 		boot_mount=/boot
 		modules_mount=/lib/modules
@@ -163,6 +201,7 @@ mount -t tmpfs tmpfs /dev/shm
 mount -t tmpfs -o mode=0755,nosuid,nodev,size=10% tmpfs /run
 load_overlay_config
 load_bootfs_config
+load_sd_post_install_config
 
 for argument in $(cat /proc/cmdline); do
 	case "$argument" in
@@ -181,6 +220,9 @@ for argument in $(cat /proc/cmdline); do
 			;;
 		rootfstype=*)
 			ROOTFSTYPE=${argument#rootfstype=}
+			;;
+		bootfs=*)
+			BOOTFS_SPEC=${argument#bootfs=}
 			;;
 		ubi.mtd=*)
 			UBI_MTD=${argument#ubi.mtd=}
@@ -227,6 +269,19 @@ if [ "$K3_OVERLAYROOT" -eq 1 ]; then
 	export K3_ROOT_INIT="$init"
 	if ! /sbin/k3-overlayroot; then
 		emergency_shell "Overlay root setup failed"
+	fi
+	if [ "$K3_SD_CARD_UPGRADE_POST_INSTALL" -eq 1 ]; then
+		USERDATA_PERSISTENT=0
+		USERDATA_DEV=
+		MISC_DEV=
+		if [ -r /run/k3-overlayroot.state ]; then
+			. /run/k3-overlayroot.state
+		fi
+		export K3_SD_CARD_UPGRADE_POST_INSTALL
+		export USERDATA_PERSISTENT USERDATA_DEV MISC_DEV
+		if ! /sbin/k3-sd-post-install; then
+			emergency_shell "SD card post-install failed"
+		fi
 	fi
 else
 	log "Rootfs overlay is disabled by configuration"

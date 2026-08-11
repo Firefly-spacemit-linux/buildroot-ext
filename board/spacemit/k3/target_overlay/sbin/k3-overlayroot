@@ -17,12 +17,24 @@ USERDATA_FULL_REPAIR=0
 ROOTFS_UUID=
 ROOTFS_UUID_FILE=$USERDATA_MOUNT/.k3-rootfs-uuid
 USERDATA_DIR_INDEX_MARKER=$USERDATA_MOUNT/.k3-dir-index-v1
+OVERLAY_STATE_FILE=/run/k3-overlayroot.state
 MISC_FORMAT_REQUEST="K3_FORMAT_USERDATA_REQUESTED_V1"
 MISC_FORMAT_IN_PROGRESS="K3_FORMAT_USERDATA_IN_PROGRESS_V1"
 
 log()
 {
 	echo "k3-overlayroot: $*"
+}
+
+write_overlay_state()
+{
+	state_tmp=${OVERLAY_STATE_FILE}.tmp
+	{
+		printf 'USERDATA_PERSISTENT=%s\n' "$USERDATA_PERSISTENT"
+		printf 'USERDATA_DEV=%s\n' "$USERDATA_DEV"
+		printf 'MISC_DEV=%s\n' "$MISC_DEV"
+	} > "$state_tmp" || return 1
+	mv "$state_tmp" "$OVERLAY_STATE_FILE"
 }
 
 resolve_device()
@@ -221,12 +233,12 @@ prepare_userdata()
 		if [ -n "$MISC_DEV" ]; then
 			write_misc_state "$MISC_FORMAT_IN_PROGRESS" || return 1
 		fi
-		/sbin/k3-mke2fs -t ext4 -F -L userdata "$USERDATA_DEV" || return 1
+		/sbin/k3-mke2fs -t ext4 -F -m 1 -L userdata "$USERDATA_DEV" || return 1
 		userdata_type=ext4
 		USERDATA_NEW=1
 	elif [ -z "$userdata_type" ]; then
 		log "Initializing the empty userdata partition"
-		/sbin/k3-mke2fs -t ext4 -F -L userdata "$USERDATA_DEV" || return 1
+		/sbin/k3-mke2fs -t ext4 -F -m 1 -L userdata "$USERDATA_DEV" || return 1
 		userdata_type=ext4
 		USERDATA_NEW=1
 	elif [ "$userdata_type" != "ext4" ]; then
@@ -339,6 +351,11 @@ fi
 
 prepare_merged_root || {
 	log "Cannot expose the lower and userdata mounts in the merged root"
+	exit 1
+}
+
+write_overlay_state || {
+	log "Cannot record the overlay state"
 	exit 1
 }
 
