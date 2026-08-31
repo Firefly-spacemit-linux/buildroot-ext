@@ -7,12 +7,8 @@ FACTORYTEST_BOARD = $(call qstrip,$(BR2_PACKAGE_FACTORYTEST_BOARD))
 define FACTORYTEST_INSTALL_TARGET_CMDS
 	rm -rf $(TARGET_DIR)/opt/factorytest
 	mkdir -p $(TARGET_DIR)/opt/factorytest
-	# Board-specific files
-	cp -r $(@D)/boards/$(FACTORYTEST_BOARD)/cricket  $(TARGET_DIR)/opt/factorytest/
-	cp -r $(@D)/boards/$(FACTORYTEST_BOARD)/tests    $(TARGET_DIR)/opt/factorytest/
-	cp -r $(@D)/boards/$(FACTORYTEST_BOARD)/utils    $(TARGET_DIR)/opt/factorytest/
-	cp    $(@D)/boards/$(FACTORYTEST_BOARD)/stability $(TARGET_DIR)/opt/factorytest/
-	cp    $(@D)/boards/$(FACTORYTEST_BOARD)/board.py  $(TARGET_DIR)/opt/factorytest/
+	# Board-specific files - copy entire board directory to factorytest root
+	cp -r $(@D)/boards/$(FACTORYTEST_BOARD)/* $(TARGET_DIR)/opt/factorytest/
 	# Common files
 	mkdir -p $(TARGET_DIR)/opt/factorytest/common/factorytest
 	cp -r $(@D)/common/factorytest/. $(TARGET_DIR)/opt/factorytest/common/factorytest/
