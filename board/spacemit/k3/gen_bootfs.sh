@@ -27,7 +27,7 @@ get_ramdisk_name() {
 	ramdisk_name=${ramdisk_name%\"}
 
 	if [ -z "$ramdisk_name" ]; then
-		ramdisk_name=initramfs-generic.img
+		ramdisk_name=initrd.img
 	fi
 
 	printf '%s' "${ramdisk_name##*/}"
