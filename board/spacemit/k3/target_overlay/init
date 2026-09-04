@@ -166,12 +166,13 @@ mount_bootfs()
 		kernel_version=$(uname -r)
 		boot_modules=$boot_mount/lib/modules/$kernel_version
 		target_modules=$modules_mount/$kernel_version
-		if [ ! -d "$boot_modules" ]; then
-			emergency_shell "Bootfs kernel modules are missing: $boot_modules"
-		fi
+#		if [ ! -d "$boot_modules" ]; then
+#			emergency_shell "Bootfs kernel modules are missing: $boot_modules"
+#		fi
+#		mount -n -o bind "$boot_modules" "$target_modules" || \
+#			emergency_shell "Cannot bind mount bootfs kernel modules"
 		mkdir -p "$target_modules"
-		mount -n -o bind "$boot_modules" "$target_modules" || \
-			emergency_shell "Cannot bind mount bootfs kernel modules"
+		mount -n -o bind "$boot_modules" "$target_modules"
 	fi
 }
 

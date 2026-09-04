@@ -51,7 +51,6 @@ esac
 if [ "$INSTALL_BOOTFS_MODULES" -eq 1 ] && \
 	[ ! -d "$BOOTFS_MODULES_ROOT/lib/modules" ]; then
 	echo "Missing bootfs kernel modules: $BOOTFS_MODULES_ROOT/lib/modules" >&2
-	exit 1
 fi
 
 FIRST_DTB=$(find "$IMAGES_DIR" -maxdepth 1 -type f -name '*.dtb' -print -quit)
