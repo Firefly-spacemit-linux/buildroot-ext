@@ -371,6 +371,11 @@ gen_sub_images() {
     if [ "$K3_OVERLAYROOT" -eq 1 ]; then
         rm -f "$MISC_IMAGE_FILE"
         truncate -s "$MISC_IMAGE_SIZE" "$MISC_IMAGE_FILE"
+        # A complete firmware flash must reset the persistent overlay on the
+        # next boot. The initramfs consumes this request and clears it after
+        # userdata has been formatted successfully.
+        printf '%s\n' "K3_FORMAT_USERDATA_REQUESTED_V1" | \
+            dd of="$MISC_IMAGE_FILE" bs=4096 count=1 conv=sync 2>/dev/null
     else
         rm -f "$IMGS_DIR/misc.img"
     fi
